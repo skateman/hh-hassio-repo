@@ -1,0 +1,29 @@
+{
+  "name": "mqtt-neopixel",
+  "version": "0.0.1",
+  "slug": "mqtt-neopixel",
+  "description": "MQTT Gateway for NeoPixel RGB LEDs running on Raspberry Pi",
+  "arch": ["aarch64", "armhf"],
+  "url": "https://github.com/skateman/mqtt-neopixel",
+  "startup": "services",
+  "services": ["mqtt:need"],
+  "boot": "auto",
+  "host_network": true,
+  "privileged": [
+    "SYS_RAWIO"
+  ],
+  "devices": [
+    "/dev/mem:/dev/mem:rwm",
+    "/dev/vcio:/dev/vcio:rwm"
+  ],
+  "gpio": true,
+  "options": {
+    "GPIO_PORT": 14,
+    "LED_COUNT": 16
+  },
+  "schema": {
+    "GPIO_PORT": "int(1,40)",
+    "LED_COUNT": "int(0,)"
+  },
+  "image": "skateman/{arch}-mqtt-neopixel"
+}
