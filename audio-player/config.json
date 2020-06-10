@@ -1,6 +1,6 @@
 {
   "name": "Audio Player",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "slug": "audio_player",
   "description": "Simple service that plays anything passed to its STDIN",
   "arch": ["aarch64", "armhf"],
@@ -11,6 +11,7 @@
   "options": {},
   "schema": {},
   "image": "skateman/{arch}-audio-player",
+  "map": ["share"],
   "host_network": true,
   "stdin": true,
   "audio": true
