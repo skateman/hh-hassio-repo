@@ -1,7 +1,7 @@
 {
   "name": "Audio Player",
-  "version": "0.0.2",
-  "slug": "audio-player",
+  "version": "0.0.3",
+  "slug": "audio_player",
   "description": "Simple service that plays anything passed to its STDIN",
   "arch": ["aarch64", "armhf"],
   "url": "https://github.com/skateman/audio-player",
