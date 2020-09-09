@@ -1,10 +1,10 @@
 {
   "name": "Audio Powersave",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "slug": "audio_powersave",
   "description": "Simple daemon that turns on/off audio based on anything playing",
   "arch": ["aarch64", "armhf"],
-  "url": "https://github.com/skateman/audio-powersave",
+  "url": "https://www.skateman.eu",
   "startup": "services",
   "services": [],
   "boot": "auto",
