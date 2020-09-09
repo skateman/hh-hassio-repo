@@ -1,6 +1,6 @@
 {
   "name": "Audio Powersave",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "slug": "audio_powersave",
   "description": "Simple daemon that turns on/off audio based on anything playing",
   "arch": ["aarch64", "armhf"],
@@ -16,7 +16,7 @@
     "log_level": "info"
   },
   "schema": {
-    "timeout": "int(0, )",
+    "timeout": "int(0,)",
     "on_path": "str",
     "off_path": "str",
     "payload": {
