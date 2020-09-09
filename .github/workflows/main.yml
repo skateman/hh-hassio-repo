@@ -19,6 +19,5 @@ jobs:
             --target audio-player                                   \
             --repository https://github.com/skateman/hh-hassio-repo \
             --branch master                                         \
-            --docker-hub ghcr.io                                    \
-            --docker-user skateman                                  \
-            --docker-password ${{ secrets.GITHUB_TOKEN }}
+            --docker-hub ghcr.io/skateman                           \
+            --docker-user skateman                                  
