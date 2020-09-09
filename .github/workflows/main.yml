@@ -17,17 +17,17 @@ jobs:
           # Set the docker storage driver to aufs
           cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json > /dev/null
 
+          echo '${{ secrets.GITHUB_TOKEN }}' | docker login docker.pkg.github.com -u skateman --password-stdin
+
           # Restart the docker daemon
           sudo service docker restart
 
           # Build and publish the container
           docker run --rm --privileged -v `pwd`:/data           \
-            -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }}      \
-            -v `pwd`:/data                                      \
+            -v `pwd`:/data -v ~/.docker:/root/.docker           \
             homeassistant/amd64-builder                         \
             --armhf                                             \
             --target /data/audio-player                         \
             --image skateman/hh-hassio-repo/{arch}-audio-player \
             --branch master                                     \
-            --docker-hub docker.pkg.github.com                  \
-            --docker-user ${{ github.actor }}
+            --docker-hub docker.pkg.github.com
