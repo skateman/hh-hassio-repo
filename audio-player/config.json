@@ -10,7 +10,7 @@
   "boot": "auto",
   "options": {},
   "schema": {},
-  "image": "skateman/{arch}-audio-player",
+  "image": "ghcr.io/skateman/{arch}-audio-player",
   "map": ["share"],
   "host_network": true,
   "stdin": true,
