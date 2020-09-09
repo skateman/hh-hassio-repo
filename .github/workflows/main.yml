@@ -16,7 +16,7 @@ jobs:
         id: get_latest_release
         with:
           query: |
-            query release($$repo:String!) {
+            query release($repo:String!) {
               repository(name:$repo) {
                 releases(first:1) {
                   nodes {
