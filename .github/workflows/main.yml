@@ -20,4 +20,5 @@ jobs:
             --repository https://github.com/skateman/hh-hassio-repo \
             --branch master                                         \
             --docker-hub ghcr.io/skateman                           \
-            --docker-user skateman                                  
+            --docker-user skateman                                  \
+            --docker-password ${{ secrets.GITHUB_TOKEN }}
