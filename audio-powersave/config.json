@@ -1,8 +1,8 @@
 {
   "name": "Audio Powersave",
-  "version": "0.0.10",
+  "version": "0.1.0",
   "slug": "audio_powersave",
-  "description": "Simple daemon that turns on/off audio based on anything playing",
+  "description": "Home Assistant Add-on to control the power saving capabilities of an amplifier or an external sound card.",
   "arch": ["aarch64", "armhf"],
   "url": "https://www.skateman.eu",
   "startup": "services",
@@ -12,7 +12,9 @@
     "timeout": 30,
     "on_path": "services/switch/turn_on",
     "off_path": "services/switch/turn_off",
-    "payload": {},
+    "payload": {
+      "entity_id": "switch.audio"
+    },
     "log_level": "info"
   },
   "schema": {
