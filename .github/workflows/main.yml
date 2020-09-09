@@ -24,7 +24,7 @@ jobs:
 
       # Runs a single command using the runners shell
       - name: Run a one-line script
-        run: docker ps -a
+        run: docker run --privileged -v ~/.docker:/root/.docker homeassistant/amd64-builder --armhf -t . -r https://github.com/skateman/hh-hassio-repo -t audio-player -b master
 
       # Runs a set of commands using the runners shell
       - name: Run a multi-line script
