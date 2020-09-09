@@ -33,9 +33,7 @@ def switch(onoff)
 
   @logger.info("Turning audio #{onoff}")
 
-  response = Net::HTTP.post(URI("http://hassio/homeassistant/api/#{path(onoff)}"), @config['payload'].to_json, HEADERS)
-
-  @logger.debug("Turned audio #{onoff} with #{response.inspect}")
+  Net::HTTP.post(URI("http://hassio/homeassistant/api/#{path(onoff)}"), @config['payload'].to_json, HEADERS).value
 
   @state = onoff
 rescue => e
