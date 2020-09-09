@@ -27,5 +27,6 @@ jobs:
             homeassistant/amd64-builder                    \
             --armhf                                        \
             --target /data/audio-player                    \
+            --image ghcr.io/skateman/{arch}-audio-player   \
             --branch master                                \
             --docker-user skateman
