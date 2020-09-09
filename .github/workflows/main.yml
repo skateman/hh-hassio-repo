@@ -21,13 +21,13 @@ jobs:
           sudo service docker restart
 
           # Build and publish the container
-          docker run --rm --privileged -v `pwd`:/data      \
-            -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} \
-            -v `pwd`:/data                                 \
-            homeassistant/amd64-builder                    \
-            --armhf                                        \
-            --target /data/audio-player                    \
-            --image skateman/{arch}-audio-player           \
-            --branch master                                \
-            --docker-hub ghcr.io                           \
+          docker run --rm --privileged -v `pwd`:/data           \
+            -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }}      \
+            -v `pwd`:/data                                      \
+            homeassistant/amd64-builder                         \
+            --armhf                                             \
+            --target /data/audio-player                         \
+            --image skateman/hh-hassio-repo/{arch}-audio-player \
+            --branch master                                     \
+            --docker-hub docker.pkg.github.com                  \
             --docker-user skateman

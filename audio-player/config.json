@@ -10,7 +10,7 @@
   "boot": "auto",
   "options": {},
   "schema": {},
-  "image": "ghcr.io/skateman/{arch}-audio-player",
+  "image": "docker.pkg.github.com/skateman/hh-hassio-repo/{arch}-audio-player",
   "map": ["share"],
   "host_network": true,
   "stdin": true,
