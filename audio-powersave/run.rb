@@ -33,9 +33,12 @@ def switch(onoff)
 
   @logger.info("Turning audio #{onoff}")
 
-  Net::HTTP.post(URI("http://hassio/homeassistant/api/#{path(onoff)}"), @config['payload'].to_json, HEADERS)
+  response = Net::HTTP.post(URI("http://hassio/homeassistant/api/#{path(onoff)}"), @config['payload'].to_json, HEADERS)
+
+  @logger.debug("Turned audio #{onoff} with #{response.inspect}")
+
   @state = onoff
-rescue StandardError => e
+rescue => e
   @logger.error(e.inspect)
 end
 
@@ -68,6 +71,6 @@ IO.popen('pactl subscribe') do |io|
 
 rescue Interrupt
   @logger.info('Exiting...')
-rescue StandardError => e
+rescue => e
   @logger.error(e.inspect)
 end
