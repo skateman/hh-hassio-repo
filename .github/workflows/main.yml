@@ -15,7 +15,7 @@ jobs:
       - name: Run a one-line script
         run: |
           # Set the docker storage driver to aufs
-          cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json
+          cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json > /dev/null
 
           # Restart the docker daemon
           sudo service docker restart
@@ -27,6 +27,7 @@ jobs:
             homeassistant/amd64-builder                    \
             --armhf                                        \
             --target /data/audio-player                    \
-            --image ghcr.io/skateman/{arch}-audio-player   \
+            --image skateman/{arch}-audio-player           \
             --branch master                                \
+            --docker-hub ghcr.io                           \
             --docker-user skateman
