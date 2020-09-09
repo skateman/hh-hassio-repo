@@ -16,8 +16,8 @@ jobs:
         id: get_latest_release
         with:
           query: |
-            query release($repo:String!) {
-              repository(name:$repo) {
+            query release($owner:String!,$repo:String!) {
+              repository(owner:$owner,name:$repo) {
                 releases(first:1) {
                   nodes {
                     name
@@ -28,6 +28,7 @@ jobs:
                 }
               }
             }
+          owner: ${{ github.actor }}
           repo: ${{ GITHUB_REPOSITORY }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
