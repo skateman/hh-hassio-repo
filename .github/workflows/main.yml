@@ -14,10 +14,9 @@ jobs:
 
       - name: Run a one-line script
         run: |
-          ls
-          docker run --privileged -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} homeassistant/amd64-builder \
+          docker run --privileged -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} -v .:/data homeassistant/amd64-builder \
             --armhf                                           \
-            --target ./audio-player                           \
+            --target /data/audio-player                       \
             --branch master                                   \
             --docker-hub ghcr.io/skateman                     \
             --docker-user skateman
