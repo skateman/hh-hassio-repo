@@ -14,11 +14,9 @@ jobs:
 
       - name: Run a one-line script
         run: |
-          docker run --privileged homeassistant/amd64-builder       \
-            --armhf                                                 \
-            --target audio-player                                   \
-            --repository https://github.com/skateman/hh-hassio-repo \
-            --branch master                                         \
-            --docker-hub ghcr.io/skateman                           \
-            --docker-user skateman                                  \
-            --docker-password ${{ secrets.GITHUB_TOKEN }}
+          docker run --privileged -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} homeassistant/amd64-builder \
+            --armhf                                           \
+            --target ./audio-player                           \
+            --branch master                                   \
+            --docker-hub ghcr.io/skateman                     \
+            --docker-user skateman
