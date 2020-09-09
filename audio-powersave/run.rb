@@ -8,7 +8,7 @@ require 'set'
 require 'uri'
 require 'logger'
 
-config = JSON.parse(File.read('/data/options.json'))
+@config = JSON.parse(File.read('/data/options.json'))
 
 HEADERS = {
   'Accept-Encoding' => 'none',
@@ -17,14 +17,14 @@ HEADERS = {
 }.freeze
 
 @sinks = Set.new
-@logger = Logger.new(STDOUT, level: config['log_level'].to_sym)
+@logger = Logger.new(STDOUT, level: @config['log_level'].to_sym)
 
 def path(onoff)
   case onoff
   when 'on'
-    config['on_path']
+    @config['on_path']
   when 'off'
-    config['off_path']
+    @config['off_path']
   end
 end
 
@@ -33,7 +33,7 @@ def switch(onoff)
 
   @logger.info("Turning audio #{onoff}")
 
-  Net::HTTP.post(URI("http://hassio/homeassistant/api/#{path(onoff)}"), config['payload'].to_json, HEADERS)
+  Net::HTTP.post(URI("http://hassio/homeassistant/api/#{path(onoff)}"), @config['payload'].to_json, HEADERS)
   @state = onoff
 rescue StandardError => e
   @logger.error(e.inspect)
@@ -47,7 +47,7 @@ end
 def cleanup
   return if @sinks.any? || @schedule&.pending?
 
-  @schedule = Concurrent::ScheduledTask.execute(config['timeout']) { switch('off') }
+  @schedule = Concurrent::ScheduledTask.execute(@config['timeout']) { switch('off') }
 end
 
 @logger.info('Starting the subscription...')
