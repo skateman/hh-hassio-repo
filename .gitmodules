@@ -1,0 +1,3 @@
+[submodule "audio-powersave"]
+	path = audio-powersave
+	url = https://github.com/skateman/audio-powersave
