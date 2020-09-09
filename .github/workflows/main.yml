@@ -14,6 +14,7 @@ jobs:
 
       - name: Run a one-line script
         run: |
+          cat /etc/docker/daemon.json
           docker run --privileged -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} -v `pwd`:/data homeassistant/amd64-builder \
             --armhf                                           \
             --target /data/audio-player                       \
