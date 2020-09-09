@@ -17,8 +17,6 @@ jobs:
           # Set the docker storage driver to aufs
           cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json > /dev/null
 
-          echo '${{ secrets.GITHUB_TOKEN }}' | docker login docker.pkg.github.com -u skateman --password-stdin
-
           # Restart the docker daemon
           sudo service docker restart
 
@@ -32,4 +30,4 @@ jobs:
             --image skateman/hh-hassio-repo/{arch}-audio-player \
             --branch master                                     \
             --docker-hub docker.pkg.github.com                  \
-            --docker-user skateman
+            --docker-user ${{ github.actor }}
