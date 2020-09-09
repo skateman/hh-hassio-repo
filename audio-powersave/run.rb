@@ -16,8 +16,9 @@ HEADERS = {
   'Content-Type' => 'application/json'
 }.freeze
 
-@sinks = Set.new
+STDOUT.sync = true
 @logger = Logger.new(STDOUT, level: @config['log_level'].to_sym)
+@sinks = Set.new
 
 def path(onoff)
   case onoff
