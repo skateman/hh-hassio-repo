@@ -14,12 +14,19 @@ jobs:
 
       - name: Run a one-line script
         run: |
+          # Set the docker storage driver to aufs
           cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json
-          cat /etc/docker/daemon.json
+
+          # Restart the docker daemon
           sudo service docker restart
-          docker run --privileged -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} -v `pwd`:/data homeassistant/amd64-builder \
-            --armhf                                           \
-            --target /data/audio-player                       \
-            --branch master                                   \
-            --docker-hub ghcr.io/skateman                     \
+
+          # Build and publish the container
+          docker run --rm --privileged -v `pwd`:/data      \
+            -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} \
+            -v `pwd`:/data                                 \
+            homeassistant/amd64-builder                    \
+            --armhf                                        \
+            --target /data/audio-player                    \
+            --branch master                                \
+            --docker-hub ghcr.io                           \
             --docker-user skateman
