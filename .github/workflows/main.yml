@@ -28,7 +28,7 @@ jobs:
                 }
               }
             }
-          owner: ${{ github.repository_owner }}
+          owner: skateman
           repo: ${{ github.repository }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
