@@ -14,7 +14,8 @@ jobs:
 
       - name: Run a one-line script
         run: |
-          cat /etc/docker/daemon.json
+          cat /etc/docker/daemon.json | jq --arg drv overlay2 '. + {"storage-driver": $drv}' > /etc/docker/daemon.json
+          sudo service docker restart
           docker run --privileged -e DOCKER_PASSWORD=${{ secrets.GITHUB_TOKEN }} -v `pwd`:/data homeassistant/amd64-builder \
             --armhf                                           \
             --target /data/audio-player                       \
