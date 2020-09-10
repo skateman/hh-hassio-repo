@@ -52,23 +52,10 @@ jobs:
             versions[$key]=$value
             versions[foo]=bar
 
-            echo ${versions[$key]}
             echo ${versions[@]}
           done
 
-          bash --version
-
-          versions[baz]=eee
           echo ${versions[@]}
-
-          echo '###################'
-
-          for i in "${!versions[@]}"
-          do
-          echo "${i}=${versions[$i]}"
-          done
-
-          echo '###################'
 
           # Iterate through all folders containing a config.json
           find -maxdepth 2 -type f -name 'config.json' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
