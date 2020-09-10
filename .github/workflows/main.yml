@@ -50,9 +50,9 @@ jobs:
 
             versions[$key]=$value
 
-            echo $versions[$key]
+            echo ${versions[$key]}
           done
-          
+
           echo '###################'
 
           echo $versions
