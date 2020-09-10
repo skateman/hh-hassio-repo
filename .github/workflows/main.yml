@@ -46,11 +46,10 @@ jobs:
             key=$(echo $archkey | sed 's/^\(\(armv7\)\|\(armhf\)\|\(aarch64\)|\(i386\)|\(amd64\)\)-//')
 
             echo $key
+            echo $value
 
             versions[$key]=$value
           done
-
-          echo $versions
 
 
       - run: |
