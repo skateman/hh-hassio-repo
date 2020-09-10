@@ -56,7 +56,7 @@ jobs:
             version=$(cat ${package}/config.json | jq -r '.version')
 
             echo $package
-            echo ${versions[${package}]}
+            echo ${versions[$package]}
             echo $version
             echo "-----"
           done
