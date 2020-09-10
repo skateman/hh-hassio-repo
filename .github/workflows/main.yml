@@ -45,10 +45,17 @@ jobs:
           echo $json | column -t -s'[],"' | while read archkey value; do
             key=$(echo $archkey | sed 's/^\(\(armv7\)\|\(armhf\)\|\(aarch64\)|\(i386\)|\(amd64\)\)-//')
 
-            echo $key
-            echo $value
-
             versions[$key]=$value
+          done
+
+          # Iterate through all folders containing a config.json
+          find -maxdepth 2 -type f -name 'config.json' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
+            version=$(cat ${package}/config.json | jq -r '.version')
+
+            echo $package
+            echo $versions[$package]
+            echo $version
+            echo "-----"
           done
 
 
