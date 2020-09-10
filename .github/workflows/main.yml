@@ -54,7 +54,7 @@ jobs:
             version=$(cat ${package}/config.json | jq -r '.version')
 
             if [ "$version" != "${versions[$package]}" ]; then
-                echo "package"
+                echo "$package"
             fi
           done
 
