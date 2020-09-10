@@ -54,6 +54,8 @@ jobs:
             echo ${versions[$key]}
           done
 
+          versions[baz]=eee
+
           echo '###################'
 
           for i in "${!versions[@]}"
@@ -66,14 +68,6 @@ jobs:
           # Iterate through all folders containing a config.json
           find -maxdepth 2 -type f -name 'config.json' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
             version=$(cat ${package}/config.json | jq -r '.version')
-
-
-            if [ "$package" = "$VAR2" ]; then
-                echo "Strings are equal."
-            else
-                echo "Strings are not equal."
-            fi
-
 
             echo $package
             echo $version
