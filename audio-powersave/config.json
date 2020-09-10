@@ -1,6 +1,6 @@
 {
   "name": "Audio Powersave",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "slug": "audio_powersave",
   "description": "Home Assistant Add-on to control the power saving capabilities of an amplifier or an external sound card.",
   "arch": ["aarch64", "armhf"],
@@ -26,7 +26,7 @@
     },
     "log_level": "list(debug|info|warn|error)"
   },
-  "image": "docker.pkg.github.com/kateman/{arch}-audio-powersave",
+  "image": "docker.pkg.github.com/skateman/{arch}-audio-powersave",
   "map": ["share"],
   "host_network": true,
   "stdin": true,
