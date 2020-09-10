@@ -51,13 +51,17 @@ jobs:
             versions[${key}]=${value}
           done
 
+          echo $versions
+
+          echo '###################'
+
           # Iterate through all folders containing a config.json
           find -maxdepth 2 -type f -name 'config.json' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
             version=$(cat ${package}/config.json | jq -r '.version')
 
             echo $package
-            echo ${versions[$package]}
             echo $version
+            echo ${versions[$package]}
             echo "-----"
           done
 
