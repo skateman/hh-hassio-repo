@@ -48,8 +48,12 @@ jobs:
             echo $key
             echo $value
 
-            versions[${key}]=${value}
+            versions[$key]=$value
+
+            echo $versions[$key]
           done
+          
+          echo '###################'
 
           echo $versions
 
