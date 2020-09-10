@@ -49,6 +49,7 @@ jobs:
             echo $value
 
             versions[$key]=$value
+            versions[foo]=bar
 
             echo ${versions[$key]}
           done
