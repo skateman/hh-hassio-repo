@@ -36,9 +36,18 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish the containers for packages with version mismatch
+      - name: Build and publish the containers for packages with a version mismatch
         shell: bash
         run: |
+          # Set the docker storage driver to aufs
+          cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json > /dev/null
+
+          # Restart the docker daemon
+          sudo service docker restart
+
+          # Docker registry login
+          echo '${{ secrets.GITHUB_TOKEN }}' | docker login docker.pkg.github.com -u skateman --password-stdin
+
           # Build a key-value pair of all published packages with their latest versions
           declare -A versions
           cols=$(echo '${{ steps.get_latest_release.outputs.data }}' | jq -c '.repository.packages.nodes[] | [.name, .versions.nodes[1].version] ' | column -t -s'[],"')
@@ -53,28 +62,18 @@ jobs:
           find -maxdepth 2 -type f -name 'config.json' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
             version=$(cat ${package}/config.json | jq -r '.version')
 
+            # If there's a version mismatch between the actual and the deployed version
             if [ "$version" != "${versions[$package]}" ]; then
-                echo "Package $package has latest deployed version '${versions[$package]}', now building '$version'"
+              echo "Package '$package' has latest deployed version '${versions[$package]}', now building '$version'"
+
+              # Build and publish the container
+              docker run --rm --privileged -v `pwd`:/data           \
+                -v `pwd`:/data -v ~/.docker:/root/.docker           \
+                homeassistant/amd64-builder                         \
+                --armhf                                             \
+                --target /data/${package}                           \
+                --image skateman/hh-hassio-repo/{arch}-${package}   \
+                --branch master                                     \
+                --docker-hub docker.pkg.github.com
             fi
           done
-
-
-      - run: |
-          # Set the docker storage driver to aufs
-          cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json > /dev/null
-
-          # Restart the docker daemon
-          sudo service docker restart
-
-          # Docker registry login
-          echo '${{ secrets.GITHUB_TOKEN }}' | docker login docker.pkg.github.com -u skateman --password-stdin
-
-          # Build and publish the container
-          # docker run --rm --privileged -v `pwd`:/data           \
-          #   -v `pwd`:/data -v ~/.docker:/root/.docker           \
-          #   homeassistant/amd64-builder                         \
-          #   --armhf                                             \
-          #   --target /data/audio-player                         \
-          #   --image skateman/hh-hassio-repo/{arch}-audio-player \
-          #   --branch master                                     \
-          #   --docker-hub docker.pkg.github.com
