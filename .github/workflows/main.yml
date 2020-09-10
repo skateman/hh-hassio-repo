@@ -37,6 +37,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Build and publish the containers for packages with version mismatch
+        shell: bash
         run: |
           # Build a key-value pair of all published packages with their latest versions
           declare -A versions
