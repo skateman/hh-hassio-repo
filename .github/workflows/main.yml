@@ -12,7 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
-      - uses: octokit/graphql-action@v2.x
+      - name: Retrieve the latest versions of all packages
+        uses: octokit/graphql-action@v2.x
         id: get_latest_release
         with:
           query: |
@@ -35,7 +36,21 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - run: "echo 'latest release: ${{ steps.get_latest_release.outputs.data }}'"
+      - name: Build and publish the containers for packages with version mismatch
+        run: |
+        # Build a key-value pair of all published packages with their latest versions
+        declare -A versions
+        json=$(echo '${{ steps.get_latest_release.outputs.data }}' | jq -c '.data.repository.packages.nodes[] | [.name, .versions.nodes[1].version] ')
+
+        echo $json | column -t -s'[],"' | while read archkey value; do
+          key=$(echo $archkey | sed 's/^\(\(armv7\)\|\(armhf\)\|\(aarch64\)|\(i386\)|\(amd64\)\)-//')
+
+          echo $key
+
+          versions[$key]=$value
+        done
+
+        echo $versions
 
 
       - run: |
