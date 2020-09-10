@@ -53,6 +53,7 @@ jobs:
             versions[foo]=bar
 
             echo ${versions[$key]}
+            echo ${versions[@]}
           done
 
           bash --version
