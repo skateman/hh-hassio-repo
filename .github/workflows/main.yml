@@ -49,10 +49,7 @@ jobs:
             echo $key
             echo $value
 
-            versions[$key]=$value
-            versions[foo]=bar
-
-            echo ${versions[@]}
+            # versions[$key]=$value
           done <<< $cols
 
           echo ${versions[@]}
