@@ -1,0 +1,76 @@
+name: GitHub Packages Container Registry
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Retrieve the latest versions of all packages
+        uses: octokit/graphql-action@v2.x
+        id: get_latest_release
+        with:
+          query: |
+            query {
+              repository(owner: "skateman", name: "hh-hassio-repo") {
+                packages(first: 42) {
+                  nodes {
+                    name
+                    versions(first: 2, orderBy: {direction: DESC, field: CREATED_AT}) {
+                      nodes {
+                        version
+                      }
+                    }
+                  }
+                }
+              }
+            }
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up the environment
+        run: |
+          # Set the docker storage driver to aufs
+          cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json > /dev/null
+
+          # Restart the docker daemon
+          sudo service docker restart
+
+          # Docker registry login
+          echo '${{ secrets.GITHUB_TOKEN }}' | docker login docker.pkg.github.com -u skateman --password-stdin
+
+      - name: Build and publish the containers for packages with a version mismatch
+        run: |
+          # Build a key-value pair of all published packages with their latest versions
+          declare -A versions
+          cols=$(echo '${{ steps.get_latest_release.outputs.data }}' | jq -c '.repository.packages.nodes[] | [.name, .versions.nodes[1].version] ' | column -t -s'[],"')
+
+          while read archkey value; do
+            key=$(echo $archkey | sed 's/^\(\(armv7\)\|\(armhf\)\|\(aarch64\)|\(i386\)|\(amd64\)\)-//')
+
+            versions[$key]=$value
+          done <<< $cols
+
+          # Iterate through all folders containing a config.json
+          find -maxdepth 2 -type f -name 'config.json' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
+            version=$(cat ${package}/config.json | jq -r '.version')
+
+            # If there's a version mismatch between the actual and the deployed version
+            if [ "$version" != "${versions[$package]}" ]; then
+              echo "Package '$package' has latest deployed version '${versions[$package]}', now building '$version'"
+
+              # Build and publish the container
+              docker run --rm --privileged -v `pwd`:/data           \
+                -v `pwd`:/data -v ~/.docker:/root/.docker           \
+                homeassistant/amd64-builder                         \
+                --armhf                                             \
+                --target /data/${package}                           \
+                --image skateman/hh-hassio-repo/{arch}-${package}   \
+                --branch master                                     \
+                --docker-hub docker.pkg.github.com
+            fi
+          done
