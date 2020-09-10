@@ -55,8 +55,10 @@ jobs:
             echo ${versions[$key]}
           done
 
+          bash --version
+
           versions[baz]=eee
-          echo $versions[@]
+          echo ${versions[@]}
 
           echo '###################'
 
