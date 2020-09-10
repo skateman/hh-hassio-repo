@@ -1,4 +1,4 @@
-name: Deploy to the GitHub Packages Container Registry
+name: GitHub Packages Container Registry
 on:
   push:
     branches: [ master ]
@@ -54,7 +54,7 @@ jobs:
             version=$(cat ${package}/config.json | jq -r '.version')
 
             if [ "$version" != "${versions[$package]}" ]; then
-                echo "$package"
+                echo "Package $package has latest deployed version '${versions[$package]}', now building '$version'"
             fi
           done
 
