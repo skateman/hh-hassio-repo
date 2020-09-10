@@ -53,7 +53,7 @@ jobs:
           find -maxdepth 2 -type f -name 'config.json' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
             version=$(cat ${package}/config.json | jq -r '.version')
 
-            if [ "$version" -ne "${versions[$package]}" ]; then
+            if [ "$version" != "${versions[$package]}" ]; then
                 echo "package"
             fi
           done
