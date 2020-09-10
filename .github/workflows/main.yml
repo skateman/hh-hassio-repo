@@ -53,7 +53,7 @@ jobs:
             versions[foo]=bar
 
             echo ${versions[@]}
-          done << (echo $cols)
+          done << $cols
 
           echo ${versions[@]}
 
