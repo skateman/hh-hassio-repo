@@ -56,7 +56,7 @@ jobs:
           done
 
           versions[baz]=eee
-          echo $versions
+          echo $versions[@]
 
           echo '###################'
 
