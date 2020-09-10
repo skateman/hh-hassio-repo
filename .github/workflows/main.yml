@@ -41,7 +41,7 @@ jobs:
         run: |
           # Build a key-value pair of all published packages with their latest versions
           declare -A versions
-          cols=$(echo '${{ steps.get_latest_release.outputs.data }}' | jq -c '.repository.packages.nodes[] | [.name, .versions.nodes[1].version] ') | column -t -s'[],"'
+          cols=$(echo '${{ steps.get_latest_release.outputs.data }}' | jq -c '.repository.packages.nodes[] | [.name, .versions.nodes[1].version] ' | column -t -s'[],"')
 
           while read archkey value; do
             key=$(echo $archkey | sed 's/^\(\(armv7\)\|\(armhf\)\|\(aarch64\)|\(i386\)|\(amd64\)\)-//')
@@ -49,7 +49,7 @@ jobs:
             echo $key
             echo $value
 
-            # versions[$key]=$value
+            versions[$key]=$value
           done <<< $cols
 
           echo ${versions[@]}
