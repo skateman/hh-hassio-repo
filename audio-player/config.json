@@ -1,9 +1,9 @@
 {
   "name": "Audio Player",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "slug": "audio_player",
   "description": "Simple service that plays anything passed to its STDIN",
-  "arch": ["aarch64", "armhf"],
+  "arch": ["armv7", "armhf", "aarch64", "i386", "amd64"],
   "url": "https://www.skateman.eu",
   "startup": "services",
   "services": [],
