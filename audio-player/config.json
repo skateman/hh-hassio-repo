@@ -1,6 +1,6 @@
 {
   "name": "Audio Player",
-  "version": "0.0.8",
+  "version": "0.1.0",
   "slug": "audio_player",
   "description": "Simple service that plays anything passed to its STDIN",
   "arch": ["armv7", "armhf", "aarch64", "i386", "amd64"],
