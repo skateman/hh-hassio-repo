@@ -1,5 +1,5 @@
 name: DNSRoboCert
-version: 0.0.2
+version: 0.0.3
 slug: dnsrobocert
 description: Orchestrate Certbot and Lexicon together to provide Let's Encrypt TLS certificates validated by DNS challenges
 arch:
@@ -16,4 +16,4 @@ image: ghcr.io/skateman/hh-hassio-repo/{arch}-dnsrobocert
 map:
   - ssl:rw
   - addon_config:rw
-host_network: true
+host_network: false
