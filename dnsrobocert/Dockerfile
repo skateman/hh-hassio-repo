@@ -3,7 +3,7 @@ ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base-python
 
 FROM $BUILD_FROM AS constraints
 
-RUN apk update && apk add gcc g++ libffi-dev libc-dev git && apk cache clean
+RUN apk update && apk add gcc libffi-dev libc-dev git && apk cache clean
 
 RUN pip install --break-system-packages "poetry==1.7.1"
 
@@ -22,12 +22,12 @@ ENV CONFIG_PATH /etc/dnsrobocert/config.yml
 ENV CERTS_PATH /etc/letsencrypt
 
 RUN apk update                                              && \
-    apk add curl bash libxslt                               && \
+    apk add curl bash libxslt gcc                           && \
     ln -s /config/dnsrobocert /etc/dnsrobocert              && \
     ln -s /config/letsencrypt /etc/letsencrypt              && \
     mkdir -p /opt/dnsrobocert/bin                           && \
     ln -s /usr/local/bin/python /opt/dnsrobocert/bin/python && \
-    PIP_EXTRA_INDEX_URL=https://www.piwheels.org/simple python3 -m pip install -c /tmp/dnsrobocert/constraints.txt /tmp/dnsrobocert/*.whl && rm -rf /tmp && apk cache clean
+    PIP_EXTRA_INDEX_URL=https://www.piwheels.org/simple python3 -m pip install -c /tmp/dnsrobocert/constraints.txt /tmp/dnsrobocert/*.whl && rm -rf /tmp && apk remove gcc && apk cache clean
 
 COPY --from=constraints /tmp/dnsrobocert/docker/run.sh /run.sh
 RUN chmod a+x /run.sh
