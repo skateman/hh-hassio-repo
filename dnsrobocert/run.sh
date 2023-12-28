@@ -1,6 +1,5 @@
 #!/bin/sh
 
-mkdir -p /config/dnsrobocert
 mkdir -p /config/letsencrypt
 
 if [ -n "$TIMEZONE" ]; then
