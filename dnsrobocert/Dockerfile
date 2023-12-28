@@ -13,7 +13,7 @@ RUN cd /tmp                                                                     
     poetry export --format constraints.txt --without-hashes > /tmp/dnsrobocert/constraints.txt && \
     poetry build -f wheel
 
-ARG BUILD_FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base-python
 FROM $BUILD_FROM
 
 COPY --from=constraints /tmp/dnsrobocert/constraints.txt /tmp/dnsrobocert/dist/*.whl /tmp/dnsrobocert/
