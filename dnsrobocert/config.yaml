@@ -1,0 +1,18 @@
+name: DNSRoboCert
+version: 0.0.1
+slug: dnsrobocert
+description: Orchestrate Certbot and Lexicon together to provide Let's Encrypt TLS certificates validated by DNS challenges
+arch:
+  - aarch64
+  - i386
+  - amd64
+url: https://dnsrobocert.readthedocs.io
+startup: application
+apparmor: true
+hassio_api: true
+boot: auto
+image: docker.pkg.github.com/skateman/hh-hassio-repo/{arch}-dnsrobocert
+map:
+  - ssl:rw
+  - addon_config:rw
+host_network: true
