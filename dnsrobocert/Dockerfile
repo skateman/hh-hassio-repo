@@ -6,7 +6,7 @@ FROM $BUILD_FROM
 ENV CONFIG_PATH /etc/dnsrobocert/config.yml
 ENV CERTS_PATH /etc/letsencrypt
 
-RUN apk update &&
+RUN apk update                                                   && \
     apk add --no-cache gcc libffi-dev libc-dev libxslt curl bash && \
     pip install dnsrobocert                                      && \
     ln -s /config/dnsrobocert /etc/dnsrobocert                   && \
