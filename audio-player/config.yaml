@@ -15,7 +15,7 @@ services: []
 boot: auto
 options: {}
 schema: {}
-image: docker.pkg.github.com/skateman/hh-hassio-repo/{arch}-audio-player
+image: ghcr.io/skateman/hh-hassio-repo/{arch}-audio-player
 map:
   - share
 host_network: true

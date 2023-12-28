@@ -27,7 +27,7 @@ schema:
   payload:
     entity_id: str?
   log_level: list(debug|info|warn|error)
-image: docker.pkg.github.com/skateman/hh-hassio-repo/{arch}-audio-powersave
+image: ghcr.io/skateman/hh-hassio-repo/{arch}-audio-powersave
 map:
   - share
 host_network: true
