@@ -1,0 +1,36 @@
+---
+name: Audio Powersave
+version: 0.1.4
+slug: audio_powersave
+description: Home Assistant Add-on to control the power saving capabilities of an amplifier or an external sound card.
+arch:
+  - armv7
+  - armhf
+  - aarch64
+  - i386
+  - amd64
+url: https://www.skateman.eu
+startup: services
+services: []
+boot: auto
+options:
+  timeout: 30
+  on_path: services/switch/turn_on
+  off_path: services/switch/turn_off
+  payload:
+    entity_id: switch.audio
+  log_level: info
+schema:
+  timeout: int(0,)
+  on_path: str
+  off_path: str
+  payload:
+    entity_id: str?
+  log_level: list(debug|info|warn|error)
+image: docker.pkg.github.com/skateman/hh-hassio-repo/{arch}-audio-powersave
+map:
+  - share
+host_network: true
+stdin: true
+audio: true
+homeassistant_api: true

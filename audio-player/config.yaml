@@ -1,0 +1,23 @@
+---
+name: Audio Player
+version: 0.1.0
+slug: audio_player
+description: Simple service that plays anything passed to its STDIN
+arch:
+  - armv7
+  - armhf
+  - aarch64
+  - i386
+  - amd64
+url: https://www.skateman.eu
+startup: services
+services: []
+boot: auto
+options: {}
+schema: {}
+image: docker.pkg.github.com/skateman/hh-hassio-repo/{arch}-audio-player
+map:
+  - share
+host_network: true
+stdin: true
+audio: true
