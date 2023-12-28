@@ -63,7 +63,9 @@ jobs:
 
               # Build and publish the container
               docker run --rm --privileged -v `pwd`:/data           \
-                -v `pwd`:/data -v ~/.docker:/root/.docker           \
+                -v /var/run/docker.sock:/var/run/docker.sock:ro     \
+                -v ~/.docker:/root/.docker                          \
+                -v `pwd`:/data                                      \
                 ghcr.io/home-assistant/amd64-builder                \
                 --all                                               \
                 --target /data/${package}                           \
