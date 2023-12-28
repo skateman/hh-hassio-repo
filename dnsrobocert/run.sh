@@ -13,6 +13,8 @@ if [ -n "$TIMEZONE" ]; then
   fi
 fi
 
+echo $(find /etc/letsencrypt)
+
 # Inhibit config.yml creation if legacy config is detected
 # to avoid skipping this legacy config processing.
 if [ ! -f "/etc/letsencrypt/domains.conf" ]; then

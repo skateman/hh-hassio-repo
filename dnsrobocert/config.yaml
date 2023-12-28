@@ -1,5 +1,5 @@
 name: DNSRoboCert
-version: 0.0.3
+version: 0.0.4
 slug: dnsrobocert
 description: Orchestrate Certbot and Lexicon together to provide Let's Encrypt TLS certificates validated by DNS challenges
 arch:
