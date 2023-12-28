@@ -1,6 +1,5 @@
 ARG BUILD_ARCH
 ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base-python
-ARG REPOSITORY=https://github.com/adferrand/dnsrobocert.git
 
 FROM $BUILD_FROM AS constraints
 
@@ -9,7 +8,7 @@ RUN apk update && apk add gcc libffi-dev libc-dev git && apk cache clean
 RUN pip install --break-system-packages "poetry==1.7.1"
 
 RUN cd /tmp                                                                                    && \
-    git clone --no-checkout $REPOSITORY                                                        && \
+    git clone --no-checkout https://github.com/adferrand/dnsrobocert.git                       && \
     cd /tmp/dnsrobocert                                                                        && \
     git checkout $(git describe --tags `git rev-list --tags --max-count=1`)                    && \
     poetry export --format constraints.txt --without-hashes > /tmp/dnsrobocert/constraints.txt && \
