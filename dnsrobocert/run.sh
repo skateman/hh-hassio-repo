@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 mkdir -p /config/letsencrypt
 
@@ -12,4 +12,4 @@ if [ -n "$TIMEZONE" ]; then
   fi
 fi
 
-exec dnsrobocert -c "${CONFIG_PATH}" -d "${CERTS_PATH}"
+exec dnsrobocert -c /config/config.yml -d /config/letsencrypt
