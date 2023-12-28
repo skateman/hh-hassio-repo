@@ -34,12 +34,6 @@ jobs:
 
       - name: Set up the environment
         run: |
-          # Set the docker storage driver to aufs
-          cat /etc/docker/daemon.json | jq --arg drv aufs '. + {"storage-driver": $drv}' | sudo tee /etc/docker/daemon.json > /dev/null
-
-          # Restart the docker daemon
-          sudo service docker restart
-
           # Docker registry login
           echo '${{ secrets.GITHUB_TOKEN }}' | docker login docker.pkg.github.com -u skateman --password-stdin
 
