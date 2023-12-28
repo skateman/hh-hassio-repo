@@ -65,7 +65,7 @@ jobs:
               docker run --rm --privileged -v `pwd`:/data           \
                 -v `pwd`:/data -v ~/.docker:/root/.docker           \
                 ghcr.io/home-assistant/amd64-builder                \
-                --all                                               \
+                --amd64                                             \
                 --target /data/${package}                           \
                 --image skateman/hh-hassio-repo/{arch}-${package}   \
                 --branch master                                     \
