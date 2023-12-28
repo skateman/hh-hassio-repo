@@ -64,7 +64,7 @@ jobs:
               # Build and publish the container
               docker run --rm --privileged -v `pwd`:/data           \
                 -v `pwd`:/data -v ~/.docker:/root/.docker           \
-                homeassistant/amd64-builder                         \
+                ghcr.io/home-assistant/amd64-builder                \
                 --all                                               \
                 --target /data/${package}                           \
                 --image skateman/hh-hassio-repo/{arch}-${package}   \
