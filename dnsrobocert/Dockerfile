@@ -3,7 +3,7 @@ ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base-python
 
 FROM $BUILD_FROM AS constraints
 
-RUN apk update && apk add gcc libffi-dev libc-dev git && apk cache clean
+RUN apk update && apk add gcc py3-cffi libffi-dev libc-dev git && apk cache clean
 
 RUN pip install --break-system-packages "poetry==1.7.1"
 
