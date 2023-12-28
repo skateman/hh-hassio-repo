@@ -1,6 +1,8 @@
-#!/bin/bash
+#!/usr/bin/with-contenv bashio
 
 mkdir -p /config/letsencrypt
+
+export HTTPS_PROXY=$(bashio::config 'proxy')
 
 if [ -n "$TIMEZONE" ]; then
   if [ -f /usr/share/zoneinfo/"$TIMEZONE" ]; then

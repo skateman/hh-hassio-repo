@@ -1,5 +1,5 @@
 name: DNSRoboCert
-version: 0.0.7
+version: 0.0.8
 slug: dnsrobocert
 description: Orchestrate Certbot and Lexicon together to provide Let's Encrypt TLS certificates validated by DNS challenges
 arch:
@@ -7,6 +7,10 @@ arch:
   - i386
   - amd64
 url: https://dnsrobocert.readthedocs.io
+options:
+  proxy: ""
+schema:
+  proxy: str
 startup: application
 apparmor: true
 hassio_api: true
