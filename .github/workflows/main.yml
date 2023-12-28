@@ -34,6 +34,10 @@ jobs:
 
       - name: Set up the environment
         run: |
+          # Install yq
+          wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          chmod a+x /usr/local/bin/yq
+
           # Docker registry login
           echo '${{ secrets.GITHUB_TOKEN }}' | docker login docker.pkg.github.com -u skateman --password-stdin
 
@@ -49,9 +53,9 @@ jobs:
             versions[$key]=$value
           done <<< $cols
 
-          # Iterate through all folders containing a config.json
-          find -maxdepth 2 -type f -name 'config.json' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
-            version=$(cat ${package}/config.json | jq -r '.version')
+          # Iterate through all folders containing a config.yaml
+          find -maxdepth 2 -type f -name 'config.yaml' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
+            version=$(cat ${package}/config.yaml | yq -r '.version')
 
             # If there's a version mismatch between the actual and the deployed version
             if [ "$version" != "${versions[$package]}" ]; then
