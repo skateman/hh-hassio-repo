@@ -3,15 +3,13 @@ ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base-python
 
 FROM $BUILD_FROM
 
-ENV CONFIG_PATH /etc/dnsrobocert/config.yml
-ENV CERTS_PATH /etc/letsencrypt
+ENV CONFIG_PATH /config/config.yml
+ENV CERTS_PATH /config/letsencrypt
 
 RUN apk update                                                   && \
     apk add --no-cache gcc libffi-dev libc-dev libxslt curl bash && \
     pip install dnsrobocert                                      && \
-    ln -s /config/dnsrobocert /etc/dnsrobocert                   && \
-    ln -s /config/letsencrypt /etc/letsencrypt                   && \
-    apk del gcc libffi-dev
+    apk del gcc libc-dev libffi-dev
 
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
