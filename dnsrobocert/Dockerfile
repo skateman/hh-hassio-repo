@@ -2,7 +2,7 @@ ARG BUILD_ARCH
 ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base-python
 ARG REPOSITORY=https://github.com/adferrand/dnsrobocert.git
 
-FROM docker.io/${BUILD_ARCH}/python:3-alpine AS constraints
+FROM $BUILD_FROM AS constraints
 
 RUN apk update && apk add gcc libffi-dev libc-dev git && apk cache clean
 
