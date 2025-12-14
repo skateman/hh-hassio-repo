@@ -48,7 +48,7 @@ jobs:
           cols=$(echo '${{ steps.get_latest_release.outputs.data }}' | jq -c '.repository.packages.nodes[] | [.name, .versions.nodes[1].version] ' | column -t -s'[],"')
 
           while read archkey value; do
-            key=$(echo $archkey | sed 's/^\(\(armv7\)\|\(armhf\)\|\(aarch64\)|\(i386\)|\(amd64\)\)-//')
+            key=$(echo $archkey | sed 's/^\(\(armv7\)\|\(armhf\)\|\(aarch64\)|\(amd64\)\)-//')
 
             versions[$key]=$value
           done <<< $cols
@@ -67,7 +67,7 @@ jobs:
                 -v ~/.docker:/root/.docker                          \
                 -v `pwd`:/data                                      \
                 ghcr.io/home-assistant/amd64-builder                \
-                --amd64 --aarch64 --i386                            \
+                --amd64 --aarch64                                   \
                 --target /data/${package}                           \
                 --image skateman/hh-hassio-repo/{arch}-${package}   \
                 --branch master                                     \
