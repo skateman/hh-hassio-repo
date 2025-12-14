@@ -4,7 +4,6 @@ slug: dnsrobocert
 description: Orchestrate Certbot and Lexicon together to provide Let's Encrypt TLS certificates validated by DNS challenges
 arch:
   - aarch64
-  - i386
   - amd64
 url: https://dnsrobocert.readthedocs.io
 options:
