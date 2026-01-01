@@ -3,9 +3,9 @@ ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base-python
 
 FROM $BUILD_FROM
 
-RUN apk update                                                   && \
-    apk add --no-cache gcc libffi-dev libc-dev libxslt curl bash && \
-    pip install dnsrobocert                                      && \
+RUN apk update                                                           && \
+    apk add --no-cache gcc libffi-dev libc-dev libxslt curl bash openssh && \
+    pip install dnsrobocert                                              && \
     apk del gcc libc-dev libffi-dev
 
 COPY run.sh /run.sh
