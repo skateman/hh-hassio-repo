@@ -87,19 +87,23 @@ class MCPManager:
             await self._connect(server)
 
     async def _connect(self, server: MCPServer) -> None:
+        ctx = None
+        session = None
         try:
             headers = {"Authorization": f"Bearer {server.token}"}
             ctx = streamablehttp_client(server.url, headers=headers)
             read, write, _ = await ctx.__aenter__()
-            self._contexts.append(ctx)
 
             session = ClientSession(read, write)
             await session.__aenter__()
-            self._contexts.append(session)
 
             await session.initialize()
             server.session = session
             server._connected = True
+
+            # Keep references for cleanup only on success
+            self._contexts.append(session)
+            self._contexts.append(ctx)
 
             # Discover tools
             result = await session.list_tools()
@@ -122,6 +126,13 @@ class MCPManager:
             )
         except BaseException:
             logger.exception("Failed to connect to MCP server %s at %s", server.name, server.url)
+            # Clean up partially-opened contexts so cancel scopes don't leak
+            for obj in (session, ctx):
+                if obj is not None:
+                    try:
+                        await obj.__aexit__(None, None, None)
+                    except Exception:
+                        pass
 
     def get_all_tools_openai(self) -> list[dict[str, Any]]:
         """Return all tools in OpenAI function-calling format, namespaced by site."""
