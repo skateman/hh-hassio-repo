@@ -98,7 +98,7 @@ class MCPManager:
                 f" at {server.url}" if not server.url.startswith("http://supervisor") else " via Supervisor API",
                 len(server.tools),
             )
-        except Exception:
+        except BaseException:
             logger.exception("Failed to connect to MCP server %s at %s", server.name, server.url)
 
     def get_all_tools_openai(self) -> list[dict[str, Any]]:
