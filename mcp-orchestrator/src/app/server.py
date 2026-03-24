@@ -59,8 +59,8 @@ async def ollama_tags() -> OllamaModelList:
     )])
 
 
-@app.post("/api/chat")
-async def ollama_chat(request: OllamaChatRequest) -> OllamaChatResponse | StreamingResponse | JSONResponse:
+@app.post("/api/chat", response_model=None)
+async def ollama_chat(request: OllamaChatRequest):
     if llm_client is None:
         return _error_response(500, "LLM client not initialized")
 
