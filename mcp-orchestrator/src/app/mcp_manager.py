@@ -46,14 +46,27 @@ class MCPManager:
             logger.warning("SUPERVISOR_TOKEN not set — skipping local MCP")
 
         # Remote connections from config
-        raw = os.environ.get("REMOTE_MCP_SERVERS", "")
-        logger.info("REMOTE_MCP_SERVERS env: %r", raw)
+        # bashio outputs list items as newline-delimited JSON objects, not a JSON array
+        raw = os.environ.get("REMOTE_MCP_SERVERS", "").strip()
+        logger.info("REMOTE_MCP_SERVERS env length: %d", len(raw))
         if raw:
+            remote_servers: list[dict[str, str]] = []
             try:
-                remote_servers = json.loads(raw)
+                parsed = json.loads(raw)
+                # If bashio returned a proper JSON array
+                if isinstance(parsed, list):
+                    remote_servers = parsed
+                else:
+                    remote_servers = [parsed]
             except json.JSONDecodeError:
-                logger.exception("Failed to parse REMOTE_MCP_SERVERS JSON")
-                remote_servers = []
+                # Newline-delimited JSON objects
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if line:
+                        try:
+                            remote_servers.append(json.loads(line))
+                        except json.JSONDecodeError:
+                            logger.exception("Failed to parse remote server line: %r", line)
             logger.info("Parsed %d remote server(s)", len(remote_servers))
             for entry in remote_servers:
                 servers.append(MCPServer(
