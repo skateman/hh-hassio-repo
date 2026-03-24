@@ -1,0 +1,46 @@
+name: MCP Orchestrator
+version: 0.0.1
+slug: mcp-orchestrator
+description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
+arch:
+  - aarch64
+  - amd64
+url: https://github.com/skateman/hh-hassio-repo
+options:
+  azure_openai_endpoint: ""
+  azure_openai_api_key: ""
+  azure_openai_deployment: ""
+  azure_openai_api_version: "2024-10-21"
+  azure_openai_extra: {}
+  local_site_name: "local"
+  remote_mcp_servers: []
+  system_prompt: >-
+    You are a smart home assistant managing multiple sites.
+    Each site has its own set of MCP tools prefixed with its name.
+    Use the default site's tools unless the user explicitly names another site.
+  default_site: ""
+  max_tool_iterations: 10
+schema:
+  azure_openai_endpoint: url
+  azure_openai_api_key: password
+  azure_openai_deployment: str
+  azure_openai_api_version: str
+  azure_openai_extra: {}
+  local_site_name: str
+  remote_mcp_servers:
+    - name: str
+      url: url
+      token: password
+  system_prompt: str
+  default_site: str
+  max_tool_iterations: "int(1,50)"
+startup: application
+init: false
+boot: auto
+hassio_api: true
+ports:
+  11434/tcp: 11434
+ports_description:
+  11434/tcp: Ollama-compatible API
+image: ghcr.io/skateman/hh-hassio-repo/{arch}-mcp-orchestrator
+host_network: false
