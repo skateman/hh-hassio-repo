@@ -9,6 +9,7 @@ RUN apk update                                                           && \
     apk del gcc libffi-dev musl-dev
 
 COPY src/ /app/
+WORKDIR /app
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 
