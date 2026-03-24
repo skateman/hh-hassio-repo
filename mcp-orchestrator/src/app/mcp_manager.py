@@ -131,8 +131,8 @@ class MCPManager:
                 if obj is not None:
                     try:
                         await obj.__aexit__(None, None, None)
-                    except Exception:
-                        pass
+                    except BaseException:
+                        logger.debug("Error during cleanup of %s", server.name, exc_info=True)
 
     def get_all_tools_openai(self) -> list[dict[str, Any]]:
         """Return all tools in OpenAI function-calling format, namespaced by site."""
