@@ -42,25 +42,34 @@ class MCPManager:
                 url="http://supervisor/core/api/mcp",
                 token=supervisor_token,
             ))
+        else:
+            logger.warning("SUPERVISOR_TOKEN not set — skipping local MCP")
 
         # Remote connections from config
         raw = os.environ.get("REMOTE_MCP_SERVERS", "")
+        logger.info("REMOTE_MCP_SERVERS env: %r", raw)
         if raw:
             try:
                 remote_servers = json.loads(raw)
             except json.JSONDecodeError:
+                logger.exception("Failed to parse REMOTE_MCP_SERVERS JSON")
                 remote_servers = []
+            logger.info("Parsed %d remote server(s)", len(remote_servers))
             for entry in remote_servers:
                 servers.append(MCPServer(
                     name=entry["name"],
                     url=entry["url"],
                     token=entry["token"],
                 ))
+        else:
+            logger.info("No remote MCP servers configured")
 
         return servers
 
     async def connect_all(self) -> None:
         servers = self._build_server_list()
+        logger.info("Will attempt to connect to %d MCP server(s): %s",
+                     len(servers), [s.name for s in servers])
         for server in servers:
             await self._connect(server)
 
