@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import time
+import unicodedata
 from typing import Any, AsyncIterator
 
 from openai import AsyncAzureOpenAI
@@ -19,6 +20,13 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize(text: str) -> str:
+    """Lowercase and strip diacritics (ě→e, š→s, ö→o, etc.)."""
+    text = text.lower()
+    nfkd = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
 class LLMClient:
@@ -40,6 +48,57 @@ class LLMClient:
 
         self._system_prompt = os.environ.get("SYSTEM_PROMPT", "")
         self._max_iterations = int(os.environ.get("MAX_TOOL_ITERATIONS", "10"))
+
+        # Global keywords — if any appear in the user message, send all tools
+        gk_raw = os.environ.get("GLOBAL_KEYWORDS", "").strip()
+        self._global_keywords = [_normalize(k.strip()) for k in gk_raw.split(",") if k.strip()] if gk_raw else []
+
+    def _detect_origin_site(self, messages: list[ChatMessage]) -> str | None:
+        """Detect the origin site from system messages (set via Ollama Instructions)."""
+        all_sites = self._mcp.connected_sites
+        for msg in messages:
+            if msg.role == "system" and msg.content:
+                text = _normalize(msg.content)
+                for site in all_sites:
+                    if _normalize(site) in text:
+                        return site
+        return None
+
+    def _select_sites(self, incoming: list[ChatMessage]) -> list[str] | None:
+        """Determine which sites' tools to include. Returns None for all tools."""
+        site_keywords = self._mcp.site_keywords
+
+        # Find the last user message
+        user_text = ""
+        for msg in reversed(incoming):
+            if msg.role == "user" and msg.content:
+                user_text = _normalize(msg.content)
+                break
+
+        # Check global keywords first — if matched, send all tools
+        if user_text and self._global_keywords:
+            if any(kw in user_text for kw in self._global_keywords):
+                logger.info("Global keyword matched — sending all tools")
+                return None
+
+        # Check site-specific keywords in user message
+        if user_text and site_keywords:
+            matched = [
+                site for site, keywords in site_keywords.items()
+                if any(_normalize(kw) in user_text for kw in keywords)
+            ]
+            if matched:
+                logger.info("Site keyword matched: %s", matched)
+                return matched
+
+        # No keyword match — fall back to origin site from system prompt
+        origin = self._detect_origin_site(incoming)
+        if origin:
+            logger.info("Using origin site as default: %s", origin)
+            return [origin]
+
+        # No origin detected — send all tools
+        return None
 
     def _build_messages(
         self, incoming: list[ChatMessage]
@@ -68,7 +127,8 @@ class LLMClient:
 
     async def chat(self, incoming: list[ChatMessage]) -> ChatCompletionResponse:
         messages = self._build_messages(incoming)
-        tools = self._mcp.get_all_tools_openai()
+        sites = self._select_sites(incoming)
+        tools = self._mcp.get_all_tools_openai(sites)
 
         for iteration in range(self._max_iterations):
             kwargs: dict[str, Any] = {
@@ -161,7 +221,8 @@ class LLMClient:
         self, incoming: list[ChatMessage]
     ) -> AsyncIterator[str]:
         messages = self._build_messages(incoming)
-        tools = self._mcp.get_all_tools_openai()
+        sites = self._select_sites(incoming)
+        tools = self._mcp.get_all_tools_openai(sites)
 
         for iteration in range(self._max_iterations):
             kwargs: dict[str, Any] = {

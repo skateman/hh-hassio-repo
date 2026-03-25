@@ -20,6 +20,7 @@ class MCPServer:
     name: str
     url: str
     token: str
+    keywords: list[str] = field(default_factory=list)
     session: ClientSession | None = None
     tools: list[dict[str, Any]] = field(default_factory=list)
     _connected: bool = False
@@ -36,11 +37,14 @@ class MCPManager:
         # Local connection via Supervisor API
         local_name = os.environ.get("LOCAL_SITE_NAME", "local")
         supervisor_token = os.environ.get("SUPERVISOR_TOKEN", "")
+        local_kw_raw = os.environ.get("LOCAL_SITE_KEYWORDS", "").strip()
+        local_keywords = [k.strip().lower() for k in local_kw_raw.split(",") if k.strip()] if local_kw_raw else []
         if supervisor_token:
             servers.append(MCPServer(
                 name=local_name,
                 url="http://supervisor/core/api/mcp",
                 token=supervisor_token,
+                keywords=local_keywords,
             ))
         else:
             logger.warning("SUPERVISOR_TOKEN not set — skipping local MCP")
@@ -69,10 +73,13 @@ class MCPManager:
                             logger.exception("Failed to parse remote server line: %r", line)
             logger.info("Parsed %d remote server(s)", len(remote_servers))
             for entry in remote_servers:
+                kw_raw = entry.get("keywords", "")
+                keywords = [k.strip().lower() for k in kw_raw.split(",") if k.strip()] if kw_raw else []
                 servers.append(MCPServer(
                     name=entry["name"],
                     url=entry["url"],
                     token=entry["token"],
+                    keywords=keywords,
                 ))
         else:
             logger.info("No remote MCP servers configured")
@@ -133,10 +140,12 @@ class MCPManager:
                     except BaseException:
                         logger.debug("Error during cleanup of %s", server.name, exc_info=True)
 
-    def get_all_tools_openai(self) -> list[dict[str, Any]]:
-        """Return all tools in OpenAI function-calling format, namespaced by site."""
+    def get_all_tools_openai(self, sites: list[str] | None = None) -> list[dict[str, Any]]:
+        """Return tools in OpenAI function-calling format, optionally filtered by site."""
         tools = []
         for server in self._servers.values():
+            if sites is not None and server.name not in sites:
+                continue
             for tool in server.tools:
                 namespaced_name = f"{server.name}{SEPARATOR}{tool['name']}"
                 tools.append({
@@ -172,6 +181,10 @@ class MCPManager:
     @property
     def connected_sites(self) -> list[str]:
         return list(self._servers.keys())
+
+    @property
+    def site_keywords(self) -> dict[str, list[str]]:
+        return {s.name: s.keywords for s in self._servers.values() if s.keywords}
 
     async def close(self) -> None:
         for ctx in reversed(self._contexts):

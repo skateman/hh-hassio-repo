@@ -19,10 +19,20 @@ The orchestrator acts as a central hub:
 | `azure_openai_api_version` | str | API version (default: `2024-10-21`) |
 | `azure_openai_extra` | str | Extra kwargs passed to chat completion calls as a JSON string (e.g., `{"reasoning_effort": "low"}`) |
 | `local_site_name` | str | Name for the local HA MCP connection (default: `local`) |
-| `remote_mcp_servers` | list | Remote MCP server connections (name, url, token) |
+| `local_site_keywords` | str | Comma-separated keywords that identify the local site in user messages |
+| `remote_mcp_servers` | list | Remote MCP server connections (name, url, token, keywords) |
 | `system_prompt` | str | Master system prompt prepended to every request |
-| `default_site` | str | Default site for tool routing |
+| `global_keywords` | str | Comma-separated keywords that trigger sending all sites' tools |
 | `max_tool_iterations` | int | Max tool-calling loop iterations (1–50, default: 10) |
+
+### Tool Filtering
+
+To reduce prompt size and latency, the orchestrator selectively sends only relevant tools to Azure OpenAI:
+
+1. **Global keywords** — if the user message contains any global keyword (e.g., "everywhere", "all sites"), all tools are sent.
+2. **Site keywords** — if the user message contains a site-specific keyword (e.g., "brno", "cabin"), only that site's tools are sent.
+3. **Origin detection** — if no keywords match, the orchestrator detects the origin site from the Ollama integration's Instructions (e.g., "This request originates from Home.") and sends only that site's tools.
+4. **Fallback** — if nothing matches, all tools are sent.
 
 ### Example Configuration
 
@@ -33,18 +43,20 @@ azure_openai_deployment: "gpt-4o"
 azure_openai_api_version: "2024-10-21"
 azure_openai_extra: '{"reasoning_effort": "low"}'
 local_site_name: "home"
+local_site_keywords: "home,house,main"
 remote_mcp_servers:
   - name: "office"
     url: "http://office.local:8123/api/mcp"
     token: "eyJ0eXAi..."
+    keywords: "office,work"
   - name: "cabin"
     url: "http://cabin.local:8123/api/mcp"
     token: "eyJ0eXAi..."
+    keywords: "cabin,cottage"
 system_prompt: >-
   You are a smart home assistant managing three sites: Home, Office, and Cabin.
   Each site has its own set of MCP tools prefixed with its name.
-  Default: use Home tools unless the user explicitly names another site.
-default_site: "home"
+global_keywords: "everywhere,all sites,all homes"
 max_tool_iterations: 10
 ```
 
@@ -68,7 +80,7 @@ On each HA site:
 2. Set the **URL** to `http://<orchestrator-ip>:11434`
 3. Select model **ha-orchestrator:latest**
 4. Configure the conversation agent — uncheck the **Assist** checkbox (the orchestrator handles tool calling internally via MCP)
-5. Optionally set per-site **Instructions** in the conversation agent config, e.g.: "This request originates from Office."
+5. Set per-site **Instructions** in the conversation agent config to identify the origin, e.g.: "This request originates from Office." — this is used for default tool filtering when no site keywords match the user message.
 6. Assign as conversation agent in Settings → Voice Assistants
 
 ## API Endpoints

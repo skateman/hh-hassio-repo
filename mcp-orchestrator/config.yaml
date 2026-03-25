@@ -1,5 +1,5 @@
 name: MCP Orchestrator
-version: 0.0.12
+version: 0.0.13
 slug: mcp-orchestrator
 description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
 arch:
@@ -13,12 +13,13 @@ options:
   azure_openai_api_version: "2024-10-21"
   azure_openai_extra: ""
   local_site_name: "local"
+  local_site_keywords: ""
   remote_mcp_servers: []
   system_prompt: >-
     You are a smart home assistant managing multiple sites.
     Each site has its own set of MCP tools prefixed with its name.
     Use the default site's tools unless the user explicitly names another site.
-  default_site: ""
+  global_keywords: ""
   max_tool_iterations: 10
 schema:
   azure_openai_endpoint: url
@@ -27,12 +28,14 @@ schema:
   azure_openai_api_version: str
   azure_openai_extra: "str?"
   local_site_name: str
+  local_site_keywords: "str?"
   remote_mcp_servers:
     - name: str
       url: url
       token: password
+      keywords: "str?"
   system_prompt: str
-  default_site: str
+  global_keywords: "str?"
   max_tool_iterations: "int(1,50)"
 startup: application
 init: false
