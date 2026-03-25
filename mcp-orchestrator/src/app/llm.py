@@ -50,7 +50,7 @@ class LLMClient:
             messages.append({"role": "system", "content": self._system_prompt})
 
         # Append incoming messages; additional system messages from
-        # Extended OpenAI Conversation are preserved after the master prompt
+        # the Ollama integration are preserved after the master prompt
         for msg in incoming:
             m: dict[str, Any] = {"role": msg.role}
             if msg.content is not None:
