@@ -87,3 +87,23 @@ On each HA site:
 
 - `GET /api/tags` — Lists available models (`ha-orchestrator:latest`)
 - `POST /api/chat` — Ollama-compatible chat (supports streaming via NDJSON)
+
+## Diagnostics
+
+The add-on automatically creates diagnostic sensor entities in HA after the first chat request:
+
+| Sensor | Tracks |
+|---|---|
+| `sensor.mcp_orchestrator_requests` | Total chat requests |
+| `sensor.mcp_orchestrator_prompt_tokens` | Input tokens sent to Azure OpenAI |
+| `sensor.mcp_orchestrator_completion_tokens` | Output tokens from Azure OpenAI |
+| `sensor.mcp_orchestrator_total_tokens` | Combined token usage |
+| `sensor.mcp_orchestrator_tool_calls` | MCP tool invocations |
+
+All sensors use `state_class: total_increasing` so HA tracks rates and handles add-on restarts. They are marked as `entity_category: diagnostic` so they don't appear on auto-generated dashboards.
+
+Each sensor carries per-site breakdowns as attributes (e.g., `site_Home`, `site_Office`). These are visible in the entity's "More info" dialog or via templates:
+
+```jinja
+{{ state_attr('sensor.mcp_orchestrator_total_tokens', 'site_Home') }}
+```

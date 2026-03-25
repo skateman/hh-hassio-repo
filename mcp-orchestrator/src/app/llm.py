@@ -6,6 +6,7 @@ import logging
 import os
 import time
 import unicodedata
+from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
 from openai import AsyncAzureOpenAI
@@ -27,6 +28,61 @@ def _normalize(text: str) -> str:
     text = text.lower()
     nfkd = unicodedata.normalize("NFKD", text)
     return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
+@dataclass
+class SiteStats:
+    requests: int = 0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    tool_calls: int = 0
+
+
+class StatsTracker:
+    def __init__(self) -> None:
+        self._by_site: dict[str, SiteStats] = {}
+        self._started_at = time.time()
+
+    def record(self, origin: str | None, prompt_tokens: int, completion_tokens: int,
+               total_tokens: int, tool_calls: int) -> None:
+        site = origin or "unknown"
+        if site not in self._by_site:
+            self._by_site[site] = SiteStats()
+        s = self._by_site[site]
+        s.requests += 1
+        s.prompt_tokens += prompt_tokens
+        s.completion_tokens += completion_tokens
+        s.total_tokens += total_tokens
+        s.tool_calls += tool_calls
+
+    def snapshot(self) -> dict[str, Any]:
+        totals = SiteStats()
+        sites = {}
+        for site, s in self._by_site.items():
+            sites[site] = {
+                "requests": s.requests,
+                "prompt_tokens": s.prompt_tokens,
+                "completion_tokens": s.completion_tokens,
+                "total_tokens": s.total_tokens,
+                "tool_calls": s.tool_calls,
+            }
+            totals.requests += s.requests
+            totals.prompt_tokens += s.prompt_tokens
+            totals.completion_tokens += s.completion_tokens
+            totals.total_tokens += s.total_tokens
+            totals.tool_calls += s.tool_calls
+        return {
+            "uptime_seconds": int(time.time() - self._started_at),
+            "totals": {
+                "requests": totals.requests,
+                "prompt_tokens": totals.prompt_tokens,
+                "completion_tokens": totals.completion_tokens,
+                "total_tokens": totals.total_tokens,
+                "tool_calls": totals.tool_calls,
+            },
+            "by_site": sites,
+        }
 
 
 class LLMClient:
@@ -52,6 +108,8 @@ class LLMClient:
         # Global keywords — if any appear in the user message, send all tools
         gk_raw = os.environ.get("GLOBAL_KEYWORDS", "").strip()
         self._global_keywords = [_normalize(k.strip()) for k in gk_raw.split(",") if k.strip()] if gk_raw else []
+
+        self.stats = StatsTracker()
 
     def _detect_origin_site(self, messages: list[ChatMessage]) -> str | None:
         """Detect the origin site from system messages (set via Ollama Instructions)."""
@@ -129,6 +187,8 @@ class LLMClient:
         messages = self._build_messages(incoming)
         sites = self._select_sites(incoming)
         tools = self._mcp.get_all_tools_openai(sites)
+        origin = self._detect_origin_site(incoming)
+        total_tool_calls = 0
 
         for iteration in range(self._max_iterations):
             kwargs: dict[str, Any] = {
@@ -176,6 +236,7 @@ class LLMClient:
                 results = await asyncio.gather(
                     *[_exec_tool(tc) for tc in choice.message.tool_calls]
                 )
+                total_tool_calls += len(choice.message.tool_calls)
                 for tool_call_id, result in results:
                     logger.info("Tool result for %s: %s", tool_call_id, str(result)[:200])
                     messages.append({
@@ -185,6 +246,10 @@ class LLMClient:
                     })
             else:
                 # Final text response
+                pt = response.usage.prompt_tokens if response.usage else 0
+                ct = response.usage.completion_tokens if response.usage else 0
+                tt = response.usage.total_tokens if response.usage else 0
+                self.stats.record(origin, pt, ct, tt, total_tool_calls)
                 return ChatCompletionResponse(
                     model=self._deployment,
                     choices=[
@@ -197,13 +262,14 @@ class LLMClient:
                         )
                     ],
                     usage=Usage(
-                        prompt_tokens=response.usage.prompt_tokens if response.usage else 0,
-                        completion_tokens=response.usage.completion_tokens if response.usage else 0,
-                        total_tokens=response.usage.total_tokens if response.usage else 0,
+                        prompt_tokens=pt,
+                        completion_tokens=ct,
+                        total_tokens=tt,
                     ),
                 )
 
         # Max iterations reached — return whatever we have
+        self.stats.record(origin, 0, 0, 0, total_tool_calls)
         return ChatCompletionResponse(
             model=self._deployment,
             choices=[
@@ -223,6 +289,9 @@ class LLMClient:
         messages = self._build_messages(incoming)
         sites = self._select_sites(incoming)
         tools = self._mcp.get_all_tools_openai(sites)
+        origin = self._detect_origin_site(incoming)
+        total_tool_calls = 0
+        last_usage = None
 
         for iteration in range(self._max_iterations):
             kwargs: dict[str, Any] = {
@@ -230,6 +299,7 @@ class LLMClient:
                 "model": self._deployment,
                 "messages": messages,
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
             if tools:
                 kwargs["tools"] = tools
@@ -238,6 +308,8 @@ class LLMClient:
             content_parts: list[str] = []
 
             async for chunk in await self._client.chat.completions.create(**kwargs):
+                if chunk.usage:
+                    last_usage = chunk.usage
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -270,6 +342,7 @@ class LLMClient:
 
             if tool_calls_acc:
                 sorted_tcs = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
+                total_tool_calls += len(sorted_tcs)
                 assistant_msg: dict[str, Any] = {
                     "role": "assistant",
                     "tool_calls": sorted_tcs,
@@ -300,6 +373,13 @@ class LLMClient:
                 continue
 
             # Done — send final chunk
+            self.stats.record(
+                origin,
+                last_usage.prompt_tokens if last_usage else 0,
+                last_usage.completion_tokens if last_usage else 0,
+                last_usage.total_tokens if last_usage else 0,
+                total_tool_calls,
+            )
             yield json.dumps({
                 "model": "ha-orchestrator",
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
@@ -309,6 +389,13 @@ class LLMClient:
             return
 
         # Max iterations
+        self.stats.record(
+            origin,
+            last_usage.prompt_tokens if last_usage else 0,
+            last_usage.completion_tokens if last_usage else 0,
+            last_usage.total_tokens if last_usage else 0,
+            total_tool_calls,
+        )
         yield json.dumps({
             "model": "ha-orchestrator",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),

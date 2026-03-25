@@ -8,6 +8,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from .ha_sensors import push_stats
 from .llm import LLMClient
 from .mcp_manager import MCPManager
 from .models import (
@@ -26,6 +27,21 @@ logger = logging.getLogger(__name__)
 
 mcp_manager = MCPManager()
 llm_client: LLMClient | None = None
+
+
+async def _push_stats_safe() -> None:
+    if llm_client:
+        try:
+            await push_stats(llm_client.stats.snapshot())
+        except Exception:
+            logger.warning("Stats push to HA failed")
+
+
+async def _stream_and_push(stream: AsyncIterator[str]) -> AsyncIterator[str]:
+    """Wrap a stream to push stats to HA after it finishes."""
+    async for chunk in stream:
+        yield chunk
+    await _push_stats_safe()
 
 
 @asynccontextmanager
@@ -69,10 +85,11 @@ async def ollama_chat(request: OllamaChatRequest):
     try:
         if request.stream:
             return StreamingResponse(
-                llm_client.chat_stream_ollama(messages),
+                _stream_and_push(llm_client.chat_stream_ollama(messages)),
                 media_type="application/x-ndjson",
             )
         response = await llm_client.chat(messages)
+        await _push_stats_safe()
         return OllamaChatResponse(
             model="ha-orchestrator",
             created_at=time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
