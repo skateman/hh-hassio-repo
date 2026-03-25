@@ -6,7 +6,7 @@ import os
 import time
 from typing import Any, AsyncIterator
 
-from openai import AzureOpenAI
+from openai import AsyncAzureOpenAI
 
 from .mcp_manager import MCPManager
 from .models import (
@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class LLMClient:
     def __init__(self, mcp_manager: MCPManager) -> None:
         self._mcp = mcp_manager
-        self._client = AzureOpenAI(
+        self._client = AsyncAzureOpenAI(
             azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
             api_key=os.environ["AZURE_OPENAI_API_KEY"],
             api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
@@ -78,7 +78,7 @@ class LLMClient:
             if tools:
                 kwargs["tools"] = tools
 
-            response = self._client.chat.completions.create(**kwargs)
+            response = await self._client.chat.completions.create(**kwargs)
             choice = response.choices[0]
 
             if choice.finish_reason == "tool_calls" or (
@@ -171,7 +171,7 @@ class LLMClient:
             tool_calls_acc: dict[int, dict[str, Any]] = {}
             content_parts: list[str] = []
 
-            for chunk in self._client.chat.completions.create(**kwargs):
+            async for chunk in await self._client.chat.completions.create(**kwargs):
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
