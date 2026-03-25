@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import hmac
+import ipaddress
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .ha_sensors import push_stats
@@ -55,6 +58,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(lifespan=lifespan)
+
+_api_key = os.environ.get("API_KEY", "")
+_HASSIO_NETWORK = ipaddress.ip_network("172.30.32.0/23")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    if _api_key and request.client:
+        client_ip = ipaddress.ip_address(request.client.host)
+        if not (client_ip.is_loopback or client_ip in _HASSIO_NETWORK):
+            token = ""
+            auth = request.headers.get("authorization", "")
+            if auth.lower().startswith("bearer "):
+                token = auth[7:]
+            if not hmac.compare_digest(token, _api_key):
+                return JSONResponse(status_code=401, content={"error": "Unauthorized"})
+    return await call_next(request)
 
 
 def _error_response(status_code: int, message: str) -> JSONResponse:

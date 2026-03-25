@@ -1,5 +1,5 @@
 name: MCP Orchestrator
-version: 0.0.14
+version: 0.0.15
 slug: mcp-orchestrator
 description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
 arch:
@@ -21,6 +21,7 @@ options:
     Use the default site's tools unless the user explicitly names another site.
   global_keywords: ""
   max_tool_iterations: 10
+  api_key: ""
 schema:
   azure_openai_endpoint: url
   azure_openai_api_key: password
@@ -37,6 +38,7 @@ schema:
   system_prompt: str
   global_keywords: "str?"
   max_tool_iterations: "int(1,50)"
+  api_key: "password?"
 startup: application
 init: false
 boot: auto

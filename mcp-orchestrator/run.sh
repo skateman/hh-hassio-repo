@@ -11,5 +11,6 @@ export REMOTE_MCP_SERVERS="$(bashio::config 'remote_mcp_servers')"
 export SYSTEM_PROMPT="$(bashio::config 'system_prompt')"
 export GLOBAL_KEYWORDS="$(bashio::config 'global_keywords')"
 export MAX_TOOL_ITERATIONS="$(bashio::config 'max_tool_iterations')"
+export API_KEY="$(bashio::config 'api_key')"
 
 exec python3 -m uvicorn app.server:app --host 0.0.0.0 --port 11434
