@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -82,8 +83,7 @@ class MCPManager:
         servers = self._build_server_list()
         logger.info("Will attempt to connect to %d MCP server(s): %s",
                      len(servers), [s.name for s in servers])
-        for server in servers:
-            await self._connect(server)
+        await asyncio.gather(*[self._connect(server) for server in servers])
 
     async def _connect(self, server: MCPServer) -> None:
         ctx = None

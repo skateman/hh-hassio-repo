@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -103,19 +104,23 @@ class LLMClient:
                     assistant_msg["content"] = choice.message.content
                 messages.append(assistant_msg)
 
-                # Execute each tool call
-                for tc in choice.message.tool_calls:
+                # Execute tool calls in parallel
+                async def _exec_tool(tc):
                     try:
                         args = json.loads(tc.function.arguments)
-                        result = await self._mcp.call_tool(tc.function.name, args)
-                        logger.info("Tool %s returned: %s", tc.function.name, result[:200] if result else "")
+                        return tc.id, await self._mcp.call_tool(tc.function.name, args)
                     except Exception as e:
                         logger.exception("Tool call %s failed", tc.function.name)
-                        result = f"Error: {e}"
+                        return tc.id, f"Error: {e}"
 
+                results = await asyncio.gather(
+                    *[_exec_tool(tc) for tc in choice.message.tool_calls]
+                )
+                for tool_call_id, result in results:
+                    logger.info("Tool result for %s: %s", tool_call_id, str(result)[:200])
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": tc.id,
+                        "tool_call_id": tool_call_id,
                         "content": str(result),
                     })
             else:
@@ -212,18 +217,23 @@ class LLMClient:
                     assistant_msg["content"] = "".join(content_parts)
                 messages.append(assistant_msg)
 
-                for tc in sorted_tcs:
+                # Execute tool calls in parallel
+                async def _exec_tool_s(tc):
                     try:
                         args = json.loads(tc["function"]["arguments"])
-                        result = await self._mcp.call_tool(tc["function"]["name"], args)
-                        logger.info("Tool %s returned: %s", tc["function"]["name"], result[:200] if result else "")
+                        return tc["id"], await self._mcp.call_tool(tc["function"]["name"], args)
                     except Exception as e:
                         logger.exception("Tool call %s failed", tc["function"]["name"])
-                        result = f"Error: {e}"
+                        return tc["id"], f"Error: {e}"
 
+                results = await asyncio.gather(
+                    *[_exec_tool_s(tc) for tc in sorted_tcs]
+                )
+                for tool_call_id, result in results:
+                    logger.info("Tool result for %s: %s", tool_call_id, str(result)[:200])
                     messages.append({
                         "role": "tool",
-                        "tool_call_id": tc["id"],
+                        "tool_call_id": tool_call_id,
                         "content": str(result),
                     })
                 continue
