@@ -1,5 +1,5 @@
 name: MCP Orchestrator
-version: 0.0.22
+version: 0.0.23
 slug: mcp-orchestrator
 description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
 arch:
