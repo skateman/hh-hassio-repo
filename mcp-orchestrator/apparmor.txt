@@ -6,10 +6,6 @@ profile example flags=(attach_disconnected,mediate_deleted) {
   # Capabilities
   file,
   signal (send) set=(kill,term,int,hup,cont),
-  network inet stream,
-  network inet dgram,
-  network inet6 stream,
-  network inet6 dgram,
 
   # S6-Overlay
   /init ix,
@@ -39,12 +35,6 @@ profile example flags=(attach_disconnected,mediate_deleted) {
 
     # Receive signals from S6-Overlay
     signal (receive) peer=*_example,
-
-    # Network access (Azure OpenAI, MCP servers, Supervisor API, inbound on 11434)
-    network inet stream,
-    network inet dgram,
-    network inet6 stream,
-    network inet6 dgram,
 
     # Access to options.json and other files within your addon
     /data/** rw,
