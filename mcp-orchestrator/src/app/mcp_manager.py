@@ -29,7 +29,8 @@ class MCPServer:
 class MCPManager:
     def __init__(self) -> None:
         self._servers: dict[str, MCPServer] = {}
-        self._contexts: list[Any] = []
+        self._shutdown_event: asyncio.Event = asyncio.Event()
+        self._connection_tasks: list[asyncio.Task[None]] = []
 
     def _build_server_list(self) -> list[MCPServer]:
         servers: list[MCPServer] = []
@@ -90,55 +91,48 @@ class MCPManager:
         servers = self._build_server_list()
         logger.info("Will attempt to connect to %d MCP server(s): %s",
                      len(servers), [s.name for s in servers])
-        await asyncio.gather(*[self._connect(server) for server in servers])
+        ready_events: list[asyncio.Event] = []
+        for server in servers:
+            ready = asyncio.Event()
+            ready_events.append(ready)
+            task = asyncio.create_task(self._connection_loop(server, ready))
+            self._connection_tasks.append(task)
+        await asyncio.gather(*[e.wait() for e in ready_events])
 
-    async def _connect(self, server: MCPServer) -> None:
-        ctx = None
-        session = None
+    async def _connection_loop(self, server: MCPServer, ready: asyncio.Event) -> None:
+        """Manage a single MCP connection in its own task so context enter/exit stay in the same task."""
         try:
             headers = {"Authorization": f"Bearer {server.token}"}
-            ctx = streamablehttp_client(server.url, headers=headers)
-            read, write, _ = await ctx.__aenter__()
+            async with streamablehttp_client(server.url, headers=headers) as (read, write, _):
+                async with ClientSession(read, write) as session:
+                    await session.initialize()
+                    server.session = session
+                    server._connected = True
 
-            session = ClientSession(read, write)
-            await session.__aenter__()
+                    # Discover tools
+                    result = await session.list_tools()
+                    server.tools = [
+                        {
+                            "name": tool.name,
+                            "description": tool.description or "",
+                            "inputSchema": tool.inputSchema,
+                        }
+                        for tool in result.tools
+                    ]
 
-            await session.initialize()
-            server.session = session
-            server._connected = True
-
-            # Keep references for cleanup only on success
-            self._contexts.append(session)
-            self._contexts.append(ctx)
-
-            # Discover tools
-            result = await session.list_tools()
-            server.tools = [
-                {
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "inputSchema": tool.inputSchema,
-                }
-                for tool in result.tools
-            ]
-
-            self._servers[server.name] = server
-            logger.info(
-                "Connected to %s MCP server (%s)%s — %d tools",
-                "local" if server.url.startswith("http://supervisor") else "remote",
-                server.name,
-                f" at {server.url}" if not server.url.startswith("http://supervisor") else " via Supervisor API",
-                len(server.tools),
-            )
+                    self._servers[server.name] = server
+                    logger.info(
+                        "Connected to %s MCP server (%s)%s — %d tools",
+                        "local" if server.url.startswith("http://supervisor") else "remote",
+                        server.name,
+                        f" at {server.url}" if not server.url.startswith("http://supervisor") else " via Supervisor API",
+                        len(server.tools),
+                    )
+                    ready.set()
+                    await self._shutdown_event.wait()
         except BaseException:
             logger.exception("Failed to connect to MCP server %s at %s", server.name, server.url)
-            # Clean up partially-opened contexts so cancel scopes don't leak
-            for obj in (session, ctx):
-                if obj is not None:
-                    try:
-                        await obj.__aexit__(None, None, None)
-                    except BaseException:
-                        logger.debug("Error during cleanup of %s", server.name, exc_info=True)
+            ready.set()
 
     def get_all_tools_openai(self, sites: list[str] | None = None) -> list[dict[str, Any]]:
         """Return tools in OpenAI function-calling format, optionally filtered by site."""
@@ -187,10 +181,8 @@ class MCPManager:
         return {s.name: s.keywords for s in self._servers.values() if s.keywords}
 
     async def close(self) -> None:
-        for ctx in reversed(self._contexts):
-            try:
-                await ctx.__aexit__(None, None, None)
-            except Exception:
-                logger.exception("Error closing MCP context")
-        self._contexts.clear()
+        self._shutdown_event.set()
+        if self._connection_tasks:
+            await asyncio.gather(*self._connection_tasks, return_exceptions=True)
+            self._connection_tasks.clear()
         self._servers.clear()
