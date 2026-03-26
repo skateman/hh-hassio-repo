@@ -12,7 +12,7 @@ jobs:
       has_changes: ${{ steps.changes.outputs.has_changes }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Determine packages to build
         id: changes
@@ -72,7 +72,7 @@ jobs:
       matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Build and push image
         uses: home-assistant/builder/actions/build-image@2026.03.2

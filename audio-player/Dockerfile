@@ -1,4 +1,4 @@
-ARG BUILD_ARCH
+ARG BUILD_ARCH=amd64
 ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base
 FROM $BUILD_FROM
 
