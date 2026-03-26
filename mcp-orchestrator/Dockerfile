@@ -15,3 +15,4 @@ RUN chmod a+x /run.sh
 
 CMD [ "/run.sh" ]
 LABEL io.hass.version="VERSION" io.hass.type="addon" io.hass.arch="aarch64|amd64"
+LABEL org.opencontainers.image.source="https://github.com/skateman/hh-hassio-repo"
