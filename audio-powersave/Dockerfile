@@ -3,7 +3,7 @@ FROM $BUILD_FROM
 
 ENV LANG C.UTF-8
 
-RUN apk add --no-cache pulseaudio-utils ruby ruby-concurrent-ruby-ext ruby-json
+RUN apk add --no-cache pulseaudio-utils ruby ruby-concurrent-ruby-ext
 
 COPY run.rb /
 RUN chmod a+x /run.rb
