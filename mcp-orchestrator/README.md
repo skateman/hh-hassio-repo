@@ -1,4 +1,4 @@
-# MCP Orchestrator
+# Azure OpenAI MCP Orchestrator
 
 A lightweight Home Assistant add-on that bridges HA Assist to Azure OpenAI via MCP (Model Context Protocol). It connects to multiple Home Assistant MCP servers across sites and exposes an Ollama-compatible API. The local HA MCP connection is auto-configured via the Supervisor API.
 
@@ -24,6 +24,7 @@ The orchestrator acts as a central hub:
 | `system_prompt` | str | Master system prompt prepended to every request |
 | `global_keywords` | str | Comma-separated keywords that trigger sending all sites' tools |
 | `max_tool_iterations` | int | Max tool-calling loop iterations (1–50, default: 10) |
+| `api_key` | password | Optional API key to protect the Ollama-compatible endpoint. When set, remote clients must send `Authorization: Bearer <key>`. Requests from the local HA (Supervisor network) are always allowed without a key. |
 
 ### Tool Filtering
 
@@ -74,14 +75,23 @@ Each HA site needs:
 
 The orchestrator exposes an Ollama-compatible API so each HA site can use the built-in **Ollama** integration — no HACS add-ons needed.
 
-On each HA site:
+On the local HA site:
+1. Add the **Ollama** integration (Settings → Devices & Services → Add Integration → "Ollama")
+2. Set the **URL** to `http://d7336e3b-mcp-orchestrator:11434`
+3. Select model **ha-orchestrator:latest**
+4. Configure the conversation agent — uncheck the **Assist** checkbox (the orchestrator handles tool calling internally via MCP)
+5. Set per-site **Instructions** in the conversation agent config to identify the origin, e.g.: "This request originates from Home." — this is used for default tool filtering when no site keywords match the user message.
+6. Assign as conversation agent in Settings → Voice Assistants
+
+On each remote HA site:
 
 1. Add the **Ollama** integration (Settings → Devices & Services → Add Integration → "Ollama")
 2. Set the **URL** to `http://<orchestrator-ip>:11434`
-3. Select model **ha-orchestrator:latest**
-4. Configure the conversation agent — uncheck the **Assist** checkbox (the orchestrator handles tool calling internally via MCP)
-5. Set per-site **Instructions** in the conversation agent config to identify the origin, e.g.: "This request originates from Office." — this is used for default tool filtering when no site keywords match the user message.
-6. Assign as conversation agent in Settings → Voice Assistants
+3. If `api_key` is set on the orchestrator, enter it in the **API Key** field (requires HA 2026.4+)
+4. Select model **ha-orchestrator:latest**
+5. Configure the conversation agent — uncheck the **Assist** checkbox (the orchestrator handles tool calling internally via MCP)
+6. Set per-site **Instructions** in the conversation agent config to identify the origin, e.g.: "This request originates from Office." — this is used for default tool filtering when no site keywords match the user message.
+7. Assign as conversation agent in Settings → Voice Assistants
 
 ## API Endpoints
 
