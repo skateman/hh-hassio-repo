@@ -1,7 +1,8 @@
-ARG BUILD_FROM
+ARG BUILD_ARCH
+ARG BUILD_FROM=ghcr.io/home-assistant/${BUILD_ARCH}-base
 FROM $BUILD_FROM
 
-ENV LANG C.UTF-8
+ENV LANG=C.UTF-8
 
 RUN apk add --no-cache pulseaudio-utils ruby ruby-concurrent-ruby-ext
 
@@ -10,5 +11,4 @@ RUN chmod a+x /run.rb
 
 CMD [ "/run.rb" ]
 
-LABEL io.hass.version="VERSION" io.hass.type="addon" io.hass.arch="armv7|armhf|aarch64|i386|amd64"
-LABEL org.opencontainers.image.source="https://github.com/skateman/hh-hassio-repo"
+LABEL io.hass.type="addon"

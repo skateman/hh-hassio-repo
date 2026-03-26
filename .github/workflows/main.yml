@@ -4,8 +4,12 @@ on:
     branches: [ master ]
 
 jobs:
-  deploy:
+  detect:
+    name: Detect changed packages
     runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.changes.outputs.matrix }}
+      has_changes: ${{ steps.changes.outputs.has_changes }}
 
     steps:
       - uses: actions/checkout@v4
@@ -32,45 +36,78 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Set up the environment
+      - name: Determine packages to build
+        id: changes
         run: |
-          # Install yq
           wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           chmod a+x /usr/local/bin/yq
 
-          # Docker registry login
-          echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u skateman --password-stdin
-
-      - name: Build and publish the containers for packages with a version mismatch
-        run: |
           # Build a key-value pair of all published packages with their latest versions
           declare -A versions
           cols=$(echo '${{ steps.get_latest_release.outputs.data }}' | jq -c '.repository.packages.nodes[] | [.name, (.versions.nodes | map(select(.version != "latest")) | .[0].version)]' | column -t -s'[],"')
 
           while read archkey value; do
             key=$(echo $archkey | sed -E 's/^(armv7|armhf|aarch64|amd64|i386)-//')
-
             versions[$key]=$value
           done <<< $cols
 
-          # Iterate through all folders containing a config.yaml
-          find -maxdepth 2 -type f -name 'config.yaml' | sed 's/\.\/\([^\/]\+\)\/.*/\1/' | while read package; do
-            version=$(cat ${package}/config.yaml | yq -r '.version')
+          # Build the matrix of packages that need building
+          matrix='{"include":[]}'
+          has_changes=false
 
-            # If there's a version mismatch between the actual and the deployed version
+          for config in */config.yaml; do
+            package=$(dirname "$config")
+            version=$(yq -r '.version' "$config")
+
             if [ "$version" != "${versions[$package]}" ]; then
-              echo "Package '$package' has latest deployed version '${versions[$package]}', now building '$version'"
+              echo "Package '$package' needs build: deployed='${versions[$package]}' current='$version'"
+              has_changes=true
 
-              # Build and publish the container
-              docker run --rm --privileged -v `pwd`:/data           \
-                -v /var/run/docker.sock:/var/run/docker.sock:ro     \
-                -v ~/.docker:/root/.docker                          \
-                -v `pwd`:/data                                      \
-                ghcr.io/home-assistant/amd64-builder                \
-                --amd64 --aarch64                                   \
-                --target /data/${package}                           \
-                --image skateman/hh-hassio-repo/{arch}-${package}   \
-                --branch master                                     \
-                --docker-hub ghcr.io
+              for arch in amd64 aarch64; do
+                case "$arch" in
+                  amd64)   os="ubuntu-24.04" ;;
+                  aarch64) os="ubuntu-24.04-arm" ;;
+                esac
+
+                image="ghcr.io/${{ github.repository }}/${arch}-${package}"
+                matrix=$(jq -c --arg arch "$arch" --arg os "$os" \
+                  --arg package "$package" --arg version "$version" \
+                  --arg image "$image" \
+                  '.include += [{arch: $arch, os: $os, package: $package, version: $version, image: $image}]' <<< "$matrix")
+              done
             fi
           done
+
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+          echo "has_changes=${has_changes}" >> "$GITHUB_OUTPUT"
+          echo "Build matrix:"
+          jq . <<< "$matrix"
+
+  build:
+    name: Build ${{ matrix.arch }}/${{ matrix.package }}
+    needs: detect
+    if: needs.detect.outputs.has_changes == 'true'
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and push image
+        uses: home-assistant/builder/actions/build-image@2026.03.2
+        with:
+          arch: ${{ matrix.arch }}
+          container-registry-password: ${{ secrets.GITHUB_TOKEN }}
+          context: ${{ matrix.package }}
+          image: ${{ matrix.image }}
+          image-tags: |
+            ${{ matrix.version }}
+            latest
+          push: "true"
+          version: ${{ matrix.version }}
+          cosign: "false"

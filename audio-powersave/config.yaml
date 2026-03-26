@@ -1,6 +1,6 @@
 ---
 name: Audio Powersave
-version: 0.1.5
+version: 0.1.6
 slug: audio_powersave
 description: Home Assistant Add-on to control the power saving capabilities of an amplifier or an external sound card.
 arch:
