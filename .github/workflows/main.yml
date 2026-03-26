@@ -14,42 +14,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Retrieve the latest versions of all packages
-        uses: octokit/graphql-action@v2.x
-        id: get_latest_release
-        with:
-          query: |
-            query {
-              repository(owner: "skateman", name: "hh-hassio-repo") {
-                packages(first: 42) {
-                  nodes {
-                    name
-                    versions(first: 2, orderBy: {direction: DESC, field: CREATED_AT}) {
-                      nodes {
-                        version
-                      }
-                    }
-                  }
-                }
-              }
-            }
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Determine packages to build
         id: changes
+        env:
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
           chmod a+x /usr/local/bin/yq
 
-          # Build a key-value pair of all published packages with their latest versions
-          declare -A versions
-          cols=$(echo '${{ steps.get_latest_release.outputs.data }}' | jq -c '.repository.packages.nodes[] | [.name, (.versions.nodes | map(select(.version != "latest")) | .[0].version)]' | column -t -s'[],"')
-
-          while read archkey value; do
-            key=$(echo $archkey | sed -E 's/^(armv7|armhf|aarch64|amd64|i386)-//')
-            versions[$key]=$value
-          done <<< $cols
+          echo "$TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
 
           # Build the matrix of packages that need building
           matrix='{"include":[]}'
@@ -59,8 +32,11 @@ jobs:
             package=$(dirname "$config")
             version=$(yq -r '.version' "$config")
 
-            if [ "$version" != "${versions[$package]}" ]; then
-              echo "Package '$package' needs build: deployed='${versions[$package]}' current='$version'"
+            # Check if the version tag already exists in the registry (using amd64 as reference)
+            if docker manifest inspect "ghcr.io/${{ github.repository }}/amd64-${package}:${version}" > /dev/null 2>&1; then
+              echo "Package '$package' version '$version' already exists, skipping"
+            else
+              echo "Package '$package' version '$version' not found in registry, needs build"
               has_changes=true
 
               for arch in amd64 aarch64; do
