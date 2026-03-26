@@ -1,5 +1,5 @@
 name: MCP Orchestrator
-version: 0.0.15
+version: 0.0.16
 slug: mcp-orchestrator
 description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
 arch:
@@ -40,6 +40,7 @@ schema:
   max_tool_iterations: "int(1,50)"
   api_key: "password?"
 startup: application
+apparmor: true
 init: false
 boot: auto
 homeassistant_api: true
