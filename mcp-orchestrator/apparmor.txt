@@ -39,26 +39,6 @@ profile example flags=(attach_disconnected,mediate_deleted) {
     # Access to options.json and other files within your addon
     /data/** rw,
 
-    # Python interpreter and standard library
-    /usr/bin/python3* rix,
-    /usr/lib/python3*/** r,
-    /usr/lib/python3*/lib-dynload/** mr,
-
-    # Installed pip packages
-    /usr/lib/python3*/site-packages/** r,
-
-    # Application code
-    /app/** r,
-
-    # Python runtime needs
-    /etc/hosts r,
-    /etc/resolv.conf r,
-    /etc/ssl/** r,
-    /usr/share/ca-certificates/** r,
-    /etc/ssl/certs/ca-certificates.crt r,
-    /proc/sys/net/core/somaxconn r,
-    /tmp/** rwk,
-    /dev/null rw,
-    /dev/urandom r,
+    /usr/bin/python3* r,
   }
 }
