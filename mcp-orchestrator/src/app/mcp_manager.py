@@ -52,8 +52,8 @@ class MCPManager:
 
         # Remote connections from config
         # bashio outputs list items as newline-delimited JSON objects, not a JSON array
-        raw = os.environ.get("REMOTE_MCP_SERVERS", "").strip()
-        logger.info("REMOTE_MCP_SERVERS env length: %d", len(raw))
+        raw = os.environ.get("REMOTE_SITES", "").strip()
+        logger.info("REMOTE_SITES env length: %d", len(raw))
         if raw:
             remote_servers: list[dict[str, str]] = []
             try:

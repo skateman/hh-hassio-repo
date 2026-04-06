@@ -14,7 +14,7 @@ options:
   azure_openai_extra: ""
   local_site_name: "local"
   local_site_keywords: ""
-  remote_mcp_servers: []
+  remote_sites: []
   system_prompt: >-
     You are a smart home assistant managing multiple sites.
     Each site has its own set of MCP tools prefixed with its name.
@@ -30,7 +30,7 @@ schema:
   azure_openai_extra: "str?"
   local_site_name: str
   local_site_keywords: "str?"
-  remote_mcp_servers:
+  remote_sites:
     - name: str
       url: url
       token: password

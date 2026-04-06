@@ -20,7 +20,7 @@ The orchestrator acts as a central hub:
 | `azure_openai_extra` | str | Extra kwargs passed to chat completion calls as a JSON string (e.g., `{"reasoning_effort": "low"}`) |
 | `local_site_name` | str | Name for the local HA MCP connection (default: `local`) |
 | `local_site_keywords` | str | Comma-separated keywords that identify the local site in user messages |
-| `remote_mcp_servers` | list | Remote MCP server connections (name, url, token, keywords) |
+| `remote_sites` | list | Remote site connections (name, url, token, keywords) |
 | `system_prompt` | str | Master system prompt prepended to every request |
 | `global_keywords` | str | Comma-separated keywords that trigger sending all sites' tools |
 | `max_tool_iterations` | int | Max tool-calling loop iterations (1–50, default: 10) |
@@ -45,7 +45,7 @@ azure_openai_api_version: "2024-10-21"
 azure_openai_extra: '{"reasoning_effort": "low"}'
 local_site_name: "home"
 local_site_keywords: "home,house,main"
-remote_mcp_servers:
+remote_sites:
   - name: "office"
     url: "http://office.local:8123/api/mcp"
     token: "eyJ0eXAi..."
