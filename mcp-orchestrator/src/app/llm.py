@@ -122,8 +122,24 @@ class LLMClient:
                         return site
         return None
 
+    def _match_site_keywords(self, text: str, site_keywords: dict[str, list[str]]) -> list[str]:
+        """Match site keywords against a normalized text. Also checks site names."""
+        matched = []
+        for site in self._mcp.connected_sites:
+            keywords = site_keywords.get(site, [])
+            if any(_normalize(kw) in text for kw in keywords) or _normalize(site) in text:
+                matched.append(site)
+        return matched
+
     def _select_sites(self, incoming: list[ChatMessage]) -> list[str] | None:
-        """Determine which sites' tools to include. Returns None for all tools."""
+        """Determine which sites' tools to include. Returns None for all tools.
+
+        Two-level keyword detection:
+        1. Check the user message for site keywords — if found, use only those sites.
+        2. If no match, check the combined system prompt (L1 master + L2 incoming) for
+           site keywords — if found, use those sites.
+        3. No match anywhere — send all tools.
+        """
         site_keywords = self._mcp.site_keywords
 
         # Find the last user message
@@ -139,23 +155,28 @@ class LLMClient:
                 logger.info("Global keyword matched — sending all tools")
                 return None
 
-        # Check site-specific keywords in user message
+        # Level 1: Check site-specific keywords in user message only
         if user_text and site_keywords:
-            matched = [
-                site for site, keywords in site_keywords.items()
-                if any(_normalize(kw) in user_text for kw in keywords)
-            ]
+            matched = self._match_site_keywords(user_text, site_keywords)
             if matched:
-                logger.info("Site keyword matched: %s", matched)
+                logger.info("Site keyword matched in user message: %s", matched)
                 return matched
 
-        # No keyword match — fall back to origin site from system prompt
-        origin = self._detect_origin_site(incoming)
-        if origin:
-            logger.info("Using origin site as default: %s", origin)
-            return [origin]
+        # Level 2: Check site-specific keywords in L2 system prompt only
+        # (incoming system messages, excluding the L1 master prompt from config)
+        system_parts: list[str] = []
+        for msg in incoming:
+            if msg.role == "system" and msg.content:
+                system_parts.append(_normalize(msg.content))
+        system_text = " ".join(system_parts)
 
-        # No origin detected — send all tools
+        if system_text and site_keywords:
+            matched = self._match_site_keywords(system_text, site_keywords)
+            if matched:
+                logger.info("Site keyword matched in system prompt: %s", matched)
+                return matched
+
+        # No keyword match — send all tools
         return None
 
     def _build_messages(
