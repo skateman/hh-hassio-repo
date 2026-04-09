@@ -180,13 +180,22 @@ class LLMClient:
         return None
 
     def _build_messages(
-        self, incoming: list[ChatMessage]
+        self, incoming: list[ChatMessage], sites: list[str] | None = None
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
 
-        # Master system prompt always first
+        # Master system prompt always first.
+        # If the prompt contains an {entities} placeholder, substitute it with
+        # the cached entity context (opt-in inline injection).  When the
+        # placeholder is absent, entities are not injected at all.
         if self._system_prompt:
-            messages.append({"role": "system", "content": self._system_prompt})
+            master = self._system_prompt
+            if "{entities}" in master:
+                entity_ctx = self._mcp.get_entity_context(sites)
+                master = master.replace(
+                    "{entities}", entity_ctx or "(no entities available)"
+                )
+            messages.append({"role": "system", "content": master})
 
         # Append incoming messages; additional system messages from
         # the Ollama integration are preserved after the master prompt
@@ -205,8 +214,8 @@ class LLMClient:
         return messages
 
     async def chat(self, incoming: list[ChatMessage]) -> ChatCompletionResponse:
-        messages = self._build_messages(incoming)
         sites = self._select_sites(incoming)
+        messages = self._build_messages(incoming, sites)
         tools = self._mcp.get_all_tools_openai(sites)
         origin = self._detect_origin_site(incoming)
         total_tool_calls = 0
@@ -307,8 +316,8 @@ class LLMClient:
     async def chat_stream_ollama(
         self, incoming: list[ChatMessage]
     ) -> AsyncIterator[str]:
-        messages = self._build_messages(incoming)
         sites = self._select_sites(incoming)
+        messages = self._build_messages(incoming, sites)
         tools = self._mcp.get_all_tools_openai(sites)
         origin = self._detect_origin_site(incoming)
         total_tool_calls = 0

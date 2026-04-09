@@ -8,6 +8,7 @@ The orchestrator acts as a central hub:
 
 - **Incoming**: Each HA site uses the built-in **Ollama** integration to send requests to the orchestrator's `/api/chat` endpoint.
 - **Outgoing**: The orchestrator connects to each site's MCP server, gathers available tools, namespaces them by site, and uses Azure OpenAI to orchestrate tool-calling across all sites.
+- **Entity caching**: At startup, the orchestrator calls `GetLiveContext` on each site to discover controllable entities (lights, switches, climate, etc.) and injects them into the system prompt. This eliminates round-trips for device commands — the model already knows what it can control.
 
 ## Configuration
 
@@ -35,6 +36,21 @@ To reduce prompt size and latency, the orchestrator selectively sends only relev
 3. **Origin detection** — if no keywords match, the orchestrator detects the origin site from the Ollama integration's Instructions (e.g., "This request originates from Home.") and sends only that site's tools.
 4. **Fallback** — if nothing matches, all tools are sent.
 
+### Entity Context
+
+After connecting to each site's MCP server, the orchestrator calls `GetLiveContext` and caches the names of **controllable** entities (domains: `switch`, `light`, `climate`, `media_player`, `vacuum`, `cover`, `fan`, `lock`). Sensors and binary sensors are excluded — the model should use `GetLiveContext` at runtime for current state queries.
+
+The cached entities are injected **inline** into the master system prompt via `{entities}` template substitution. If the system prompt contains `{entities}`, it is replaced with entity lines in `SITE: name [type], name [type], ...` format — one line per site, with the site name in UPPERCASE:
+
+```
+HOME: Living Room Lamp [light], TV [media_player], Kitchen Lights [light], Gate [switch]
+CABIN: Bedroom Lights [switch], Heater [climate], Terrace Lights [switch]
+```
+
+If no entities are available, the placeholder is replaced with `(no entities available)`. If the system prompt does **not** contain `{entities}`, no entity injection occurs (opt-in).
+
+Area names are deliberately omitted from the list to prevent the model from prepending area names to entity names in tool calls (e.g., `"Living Room: 3D Printer"` instead of `"3D Printer"`). Entity context follows the same site filtering as tools — if the request is routed to a single site, only that site's entities are included. This keeps prompt size minimal (~60–160 tokens per site) while eliminating `GetLiveContext` round-trips (~1200 tokens each) for device commands.
+
 ### Example Configuration
 
 ```yaml
@@ -57,6 +73,12 @@ remote_sites:
 system_prompt: >-
   You are a smart home assistant managing three sites: Home, Office, and Cabin.
   Each site has its own set of MCP tools prefixed with its name.
+  Controllable entities in "SITE: name [type], name [type], ..." format
+  (always call the entity on its own SITE's server):
+  {entities}
+  Use only the name part (before the brackets) in the "name" field of tool calls.
+  Use GetLiveContext only when you need current sensor readings
+  (temperature, humidity, state). Never invent entity names.
 global_keywords: "everywhere,all sites,all homes"
 max_tool_iterations: 10
 ```

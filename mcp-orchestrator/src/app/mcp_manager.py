@@ -23,6 +23,7 @@ class MCPServer:
     keywords: list[str] = field(default_factory=list)
     session: ClientSession | None = None
     tools: list[dict[str, Any]] = field(default_factory=list)
+    entities: str = ""
     _connected: bool = False
 
 
@@ -121,18 +122,80 @@ class MCPManager:
                     ]
 
                     self._servers[server.name] = server
+
+                    # Cache controllable entity names for prompt injection
+                    server.entities = await self._cache_entities(session, server.name)
+
                     logger.info(
-                        "Connected to %s MCP server (%s)%s — %d tools",
+                        "Connected to %s MCP server (%s)%s — %d tools, %d entity chars",
                         "local" if server.url.startswith("http://supervisor") else "remote",
                         server.name,
                         f" at {server.url}" if not server.url.startswith("http://supervisor") else " via Supervisor API",
                         len(server.tools),
+                        len(server.entities),
                     )
                     ready.set()
                     await self._shutdown_event.wait()
         except BaseException:
             logger.exception("Failed to connect to MCP server %s at %s", server.name, server.url)
             ready.set()
+
+    _CONTROLLABLE_DOMAINS = frozenset({
+        "switch", "light", "climate", "media_player", "vacuum", "cover", "fan", "lock",
+    })
+
+    async def _cache_entities(self, session: ClientSession, site_name: str) -> str:
+        """Call GetLiveContext and extract controllable entity names in compact format.
+
+        Returns a flat string like: "3D Printer [switch], Botond's Room Lamp [light], ..."
+        """
+        try:
+            result = await session.call_tool("GetLiveContext", {})
+            text = "\n".join(
+                item.text for item in result.content if hasattr(item, "text")
+            )
+        except Exception:
+            logger.warning("Failed to fetch entities for %s", site_name, exc_info=True)
+            return ""
+
+        entries: list[str] = []
+        current_name = current_domain = None
+
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("- names:"):
+                current_name = stripped.split(":", 1)[1].strip()
+                current_domain = None
+            elif stripped.startswith("domain:"):
+                current_domain = stripped.split(":", 1)[1].strip()
+                if (current_name and current_domain
+                        and current_domain in self._CONTROLLABLE_DOMAINS):
+                    entries.append(f"{current_name} [{current_domain}]")
+                current_name = current_domain = None
+            elif stripped.startswith("areas:"):
+                # Skip area info — flat list only
+                pass
+
+        if not entries:
+            return ""
+
+        # Deduplicate (same entity may appear under multiple areas)
+        return ", ".join(dict.fromkeys(entries))
+
+    def get_entity_context(self, sites: list[str] | None = None) -> str:
+        """Return cached entity context for the selected sites.
+
+        Format: ``SITE: entity [type], entity [type], ...`` — one line per site.
+        The UPPERCASE prefix helps the model map entities to the correct site's
+        MCP tools and visually separates site labels from ``[type]`` brackets.
+        """
+        parts = []
+        for server in self._servers.values():
+            if sites is not None and server.name not in sites:
+                continue
+            if server.entities:
+                parts.append(f"{server.name.upper()}: {server.entities}")
+        return "\n".join(parts)
 
     def get_all_tools_openai(self, sites: list[str] | None = None) -> list[dict[str, Any]]:
         """Return tools in OpenAI function-calling format, optionally filtered by site."""
