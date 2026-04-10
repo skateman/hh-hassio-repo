@@ -15,3 +15,4 @@ Thumbs.db
 
 # Prompt refinement (local testing tooling)
 prompt-refinement/
+.mcp.json
