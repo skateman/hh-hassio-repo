@@ -24,12 +24,14 @@ from .models import (
     OllamaModel,
     OllamaModelList,
 )
+from .remote_logging import RemoteLogger
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
 mcp_manager = MCPManager()
 llm_client: LLMClient | None = None
+remote_logger: RemoteLogger | None = None
 
 
 async def _push_stats_safe() -> None:
@@ -49,11 +51,21 @@ async def _stream_and_push(stream: AsyncIterator[str]) -> AsyncIterator[str]:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    global llm_client
+    global llm_client, remote_logger
     await mcp_manager.connect_all()
     logger.info("Connected sites: %s", mcp_manager.connected_sites)
-    llm_client = LLMClient(mcp_manager)
+
+    conn_str = os.environ.get("REMOTE_LOGGING_CONNECTION_STRING", "").strip()
+    if conn_str:
+        remote_logger = RemoteLogger(conn_str)
+        logger.info("Remote logging enabled (Azure Blob Storage)")
+    else:
+        logger.info("Remote logging disabled (no connection string)")
+
+    llm_client = LLMClient(mcp_manager, remote_logger=remote_logger)
     yield
+    if remote_logger:
+        await remote_logger.close()
     await mcp_manager.close()
 
 

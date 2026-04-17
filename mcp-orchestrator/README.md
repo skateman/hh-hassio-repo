@@ -25,6 +25,7 @@ The orchestrator acts as a central hub:
 | `system_prompt` | str | Master system prompt prepended to every request |
 | `global_keywords` | str | Comma-separated keywords that trigger sending all sites' tools |
 | `max_tool_iterations` | int | Max tool-calling loop iterations (1–50, default: 10) |
+| `remote_logging_connection_string` | password | Azure Blob Storage connection string for remote logging. When set, missed-intent events are logged to blob storage for prompt analysis. Leave empty to disable (default). |
 | `api_key` | password | Optional API key to protect the Ollama-compatible endpoint. When set, remote clients must send `Authorization: Bearer <key>`. Requests from the local HA (Supervisor network) are always allowed without a key. |
 
 ### Tool Filtering
@@ -73,12 +74,11 @@ remote_sites:
 system_prompt: >-
   You are a smart home assistant managing three sites: Home, Office, and Cabin.
   Each site has its own set of MCP tools prefixed with its name.
-  Controllable entities in "SITE: name [type], name [type], ..." format
-  (always call the entity on its own SITE's server):
+  Tool names include the site prefix (e.g. site__tool). Results from a site's tools always belong to that site.
+  Controllable entities in "SITE: name [type], name [type], ..." format (always call the entity on its own SITE's server):
   {entities}
   Use only the name part (before the brackets) in the "name" field of tool calls.
-  Use GetLiveContext only when you need current sensor readings
-  (temperature, humidity, state). Never invent entity names.
+  Use GetLiveContext only when you need current sensor readings (temperature, humidity, state). Never invent entity names.
 global_keywords: "everywhere,all sites,all homes"
 max_tool_iterations: 10
 ```
@@ -119,6 +119,45 @@ On each remote HA site:
 
 - `GET /api/tags` — Lists available models (`ha-orchestrator:latest`)
 - `POST /api/chat` — Ollama-compatible chat (supports streaming via NDJSON)
+
+## Remote Logging
+
+The orchestrator can optionally log **missed intents** — voice requests where tools were available but the model responded with text instead of calling any tool. These events help identify gaps in the system prompt or entity exposure.
+
+**Privacy note:** When enabled, the user's voice command and the model's response are stored in Azure Blob Storage. This feature is opt-in and disabled by default.
+
+### Setup
+
+1. Create an Azure Storage Account (or reuse an existing one)
+2. Copy the connection string from **Access keys** in the Azure Portal
+3. Set `remote_logging_connection_string` in the add-on config
+
+The container (`mcp-orchestrator-logs`) and daily blobs (`logs/YYYY-MM-DD.jsonl`) are created automatically.
+
+### Event Schema
+
+Each JSONL record contains:
+
+| Field | Description |
+|---|---|
+| `ts` | UTC timestamp |
+| `origin` | Detected origin site (or `null`) |
+| `routed_sites` | Sites whose tools were sent |
+| `user_message` | The voice command text |
+| `assistant_response` | Model's text reply |
+| `tools_available` | Number of tools sent |
+| `tool_calls_made` | Always `0` (missed intent) |
+| `prompt_tokens` | Input tokens used |
+| `completion_tokens` | Output tokens used |
+
+### Analyzing Logs
+
+Use the `fetch-logs` tool in the prompt-refinement MCP server to retrieve and review missed intents:
+
+```
+fetch-logs(date="2026-04-17")
+fetch-logs(date_from="2026-04-14", date_to="2026-04-17")
+```
 
 ## Diagnostics
 

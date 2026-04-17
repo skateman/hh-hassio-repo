@@ -11,6 +11,7 @@ export REMOTE_SITES="$(bashio::config 'remote_sites')"
 export SYSTEM_PROMPT="$(bashio::config 'system_prompt')"
 export GLOBAL_KEYWORDS="$(bashio::config 'global_keywords')"
 export MAX_TOOL_ITERATIONS="$(bashio::config 'max_tool_iterations')"
+export REMOTE_LOGGING_CONNECTION_STRING="$(bashio::config 'remote_logging_connection_string')"
 export API_KEY="$(bashio::config 'api_key')"
 
 exec python3 -m uvicorn app.server:app --host 0.0.0.0 --port 11434

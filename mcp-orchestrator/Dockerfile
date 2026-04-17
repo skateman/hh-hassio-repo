@@ -5,7 +5,7 @@ FROM $BUILD_FROM
 
 RUN apk update                                                           && \
     apk add --no-cache gcc libffi-dev musl-dev                           && \
-    pip install --no-cache-dir mcp openai fastapi uvicorn                && \
+    pip install --no-cache-dir mcp openai fastapi uvicorn azure-storage-blob && \
     apk del gcc libffi-dev musl-dev
 
 COPY src/ /app/

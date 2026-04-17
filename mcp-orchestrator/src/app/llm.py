@@ -19,6 +19,7 @@ from .models import (
     ChoiceMessage,
     Usage,
 )
+from .remote_logging import RemoteLogger
 
 logger = logging.getLogger(__name__)
 
@@ -86,8 +87,9 @@ class StatsTracker:
 
 
 class LLMClient:
-    def __init__(self, mcp_manager: MCPManager) -> None:
+    def __init__(self, mcp_manager: MCPManager, remote_logger: RemoteLogger | None = None) -> None:
         self._mcp = mcp_manager
+        self._remote_logger = remote_logger
         self._client = AsyncAzureOpenAI(
             azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
             api_key=os.environ["AZURE_OPENAI_API_KEY"],
@@ -110,6 +112,35 @@ class LLMClient:
         self._global_keywords = [_normalize(k.strip()) for k in gk_raw.split(",") if k.strip()] if gk_raw else []
 
         self.stats = StatsTracker()
+
+    def _emit_missed_intent(
+        self,
+        incoming: list[ChatMessage],
+        response_text: str,
+        origin: str | None,
+        sites: list[str] | None,
+        tools_count: int,
+        prompt_tokens: int,
+        completion_tokens: int,
+    ) -> None:
+        """Log a missed-intent event if remote logging is enabled."""
+        if not self._remote_logger:
+            return
+        user_msg = ""
+        for msg in reversed(incoming):
+            if msg.role == "user" and msg.content:
+                user_msg = msg.content
+                break
+        self._remote_logger.log_missed_intent_bg({
+            "origin": origin,
+            "routed_sites": sites or self._mcp.connected_sites,
+            "user_message": user_msg,
+            "assistant_response": response_text,
+            "tools_available": tools_count,
+            "tool_calls_made": 0,
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+        })
 
     def _detect_origin_site(self, messages: list[ChatMessage]) -> str | None:
         """Detect the origin site from system messages (set via Ollama Instructions)."""
@@ -280,6 +311,11 @@ class LLMClient:
                 ct = response.usage.completion_tokens if response.usage else 0
                 tt = response.usage.total_tokens if response.usage else 0
                 self.stats.record(origin, pt, ct, tt, total_tool_calls)
+                if total_tool_calls == 0 and tools:
+                    self._emit_missed_intent(
+                        incoming, choice.message.content or "", origin, sites,
+                        len(tools), pt, ct,
+                    )
                 return ChatCompletionResponse(
                     model=self._deployment,
                     choices=[
@@ -410,6 +446,13 @@ class LLMClient:
                 last_usage.total_tokens if last_usage else 0,
                 total_tool_calls,
             )
+            if total_tool_calls == 0 and tools:
+                self._emit_missed_intent(
+                    incoming, "".join(content_parts), origin, sites,
+                    len(tools),
+                    last_usage.prompt_tokens if last_usage else 0,
+                    last_usage.completion_tokens if last_usage else 0,
+                )
             yield json.dumps({
                 "model": "ha-orchestrator",
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),

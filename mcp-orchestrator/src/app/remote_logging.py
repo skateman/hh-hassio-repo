@@ -1,0 +1,84 @@
+"""Opt-in remote logging of missed intents to Azure Blob Storage.
+
+When enabled, every voice request that had tools available but made zero
+tool calls is logged as a JSONL record to an append blob.  Daily rotation
+keeps one blob per day: ``logs/YYYY-MM-DD.jsonl``.
+
+The feature is entirely opt-in: unless a valid connection string is
+provided at startup, the logger stays disabled.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from datetime import datetime, timezone
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+_CONTAINER_NAME = "mcp-orchestrator-logs"
+
+
+class RemoteLogger:
+    """Fire-and-forget logger backed by Azure Blob Storage append blobs."""
+
+    def __init__(self, connection_string: str) -> None:
+        # Import lazily so the module can be loaded even when the SDK is
+        # not installed (logger simply won't be instantiated).
+        from azure.storage.blob.aio import ContainerClient
+
+        self._container = ContainerClient.from_connection_string(
+            connection_string, container_name=_CONTAINER_NAME,
+        )
+        self._container_ensured = False
+
+    async def _ensure_container(self) -> None:
+        """Create the blob container if it does not exist yet."""
+        if self._container_ensured:
+            return
+        try:
+            await self._container.create_container()
+            logger.info("Created blob container %s", _CONTAINER_NAME)
+        except Exception:
+            # 409 Conflict = already exists, which is fine
+            pass
+        self._container_ensured = True
+
+    async def log_missed_intent(self, event: dict[str, Any]) -> None:
+        """Append a single JSONL record to today's blob.
+
+        This is fire-and-forget: exceptions are caught and logged locally
+        but never propagated to the caller.
+        """
+        try:
+            await self._ensure_container()
+
+            now = datetime.now(timezone.utc)
+            event["ts"] = now.isoformat()
+            blob_name = f"logs/{now.strftime('%Y-%m-%d')}.jsonl"
+            line = json.dumps(event, ensure_ascii=False) + "\n"
+
+            blob = self._container.get_blob_client(blob_name)
+            try:
+                await blob.append_block(line.encode())
+            except Exception:
+                # Blob doesn't exist yet — create as append blob, then write
+                await blob.create_append_blob()
+                await blob.append_block(line.encode())
+
+            logger.info("Logged missed intent to %s (%d bytes)", blob_name, len(line))
+        except Exception:
+            logger.warning("Failed to log missed intent to blob storage", exc_info=True)
+
+    def log_missed_intent_bg(self, event: dict[str, Any]) -> None:
+        """Schedule log_missed_intent as a background task (non-blocking)."""
+        asyncio.create_task(self.log_missed_intent(event))
+
+    async def close(self) -> None:
+        """Close the underlying container client."""
+        try:
+            await self._container.close()
+        except Exception:
+            pass
