@@ -29,10 +29,17 @@ class RemoteLogger:
         # not installed (logger simply won't be instantiated).
         from azure.storage.blob.aio import ContainerClient
 
-        self._container = ContainerClient.from_connection_string(
-            connection_string, container_name=_CONTAINER_NAME,
-        )
-        self._container_ensured = False
+        # Support both full connection strings (with AccountName) and
+        # container-scoped SAS URLs (https://account.blob.core.windows.net/container?sv=...)
+        if connection_string.startswith("http"):
+            self._container = ContainerClient.from_container_url(connection_string)
+        else:
+            self._container = ContainerClient.from_connection_string(
+                connection_string, container_name=_CONTAINER_NAME,
+            )
+        # Container-scoped SAS URLs point at an existing container,
+        # so we can skip the ensure step.
+        self._container_ensured = connection_string.startswith("http")
 
     async def _ensure_container(self) -> None:
         """Create the blob container if it does not exist yet."""
