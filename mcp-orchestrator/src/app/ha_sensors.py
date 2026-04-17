@@ -19,25 +19,6 @@ _SENSORS: list[tuple[str, str, str, str, str]] = [
     ("sensor.mcp_orchestrator_tool_calls", "tool_calls", "MCP Orchestrator Tool Calls", "calls", "mdi:wrench"),
 ]
 
-_registry_done = False
-
-
-async def _mark_diagnostic(client: httpx.AsyncClient, headers: dict[str, str]) -> None:
-    """Mark all sensors as diagnostic in the entity registry (once)."""
-    global _registry_done
-    if _registry_done:
-        return
-    for entity_id, *_ in _SENSORS:
-        try:
-            await client.post(
-                f"{_SUPERVISOR_API}/config/entity_registry/{entity_id}",
-                headers=headers,
-                json={"entity_category": "diagnostic"},
-            )
-        except Exception:
-            logger.debug("Could not set entity_category for %s", entity_id)
-    _registry_done = True
-
 
 async def push_stats(snapshot: dict[str, Any]) -> None:
     """Push current stats to HA as sensor entities via the Supervisor API."""
@@ -71,5 +52,3 @@ async def push_stats(snapshot: dict[str, Any]) -> None:
                 )
             except Exception:
                 logger.warning("Failed to push %s to HA", entity_id)
-
-        await _mark_diagnostic(client, headers)

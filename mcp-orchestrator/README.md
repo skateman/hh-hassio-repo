@@ -171,7 +171,7 @@ The add-on automatically creates diagnostic sensor entities in HA after the firs
 | `sensor.mcp_orchestrator_total_tokens` | Combined token usage |
 | `sensor.mcp_orchestrator_tool_calls` | MCP tool invocations |
 
-All sensors use `state_class: total_increasing` so HA tracks rates and handles add-on restarts. They are marked as `entity_category: diagnostic` so they don't appear on auto-generated dashboards.
+All sensors use `state_class: total_increasing` so HA tracks rates and handles add-on restarts.
 
 Each sensor carries per-site breakdowns as attributes (e.g., `site_Home`, `site_Office`). These are visible in the entity's "More info" dialog or via templates:
 
