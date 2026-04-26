@@ -23,6 +23,7 @@ options:
   max_tool_iterations: 10
   remote_logging_connection_string: ""
   api_key: ""
+  log_level: "info"
 schema:
   azure_openai_endpoint: url
   azure_openai_api_key: password
@@ -41,6 +42,7 @@ schema:
   max_tool_iterations: "int(1,50)"
   remote_logging_connection_string: "password?"
   api_key: "password?"
+  log_level: "list(debug|info|warning|error)?"
 startup: application
 apparmor: true
 init: false

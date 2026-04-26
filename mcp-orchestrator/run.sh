@@ -13,5 +13,14 @@ export GLOBAL_KEYWORDS="$(bashio::config 'global_keywords')"
 export MAX_TOOL_ITERATIONS="$(bashio::config 'max_tool_iterations')"
 export REMOTE_LOGGING_CONNECTION_STRING="$(bashio::config 'remote_logging_connection_string')"
 export API_KEY="$(bashio::config 'api_key')"
+export LOG_LEVEL="$(bashio::config 'log_level')"
 
-exec python3 -m uvicorn app.server:app --host 0.0.0.0 --port 11434
+# Map log level to uvicorn's expected values
+case "${LOG_LEVEL}" in
+  debug)   UVICORN_LOG_LEVEL="debug" ;;
+  warning) UVICORN_LOG_LEVEL="warning" ;;
+  error)   UVICORN_LOG_LEVEL="error" ;;
+  *)       UVICORN_LOG_LEVEL="info" ;;
+esac
+
+exec python3 -m uvicorn app.server:app --host 0.0.0.0 --port 11434 --log-level "${UVICORN_LOG_LEVEL}"

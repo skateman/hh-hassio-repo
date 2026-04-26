@@ -75,7 +75,7 @@ class RemoteLogger:
                 await blob.create_append_blob()
                 await blob.append_block(line.encode())
 
-            logger.info("Logged missed intent to %s (%d bytes)", blob_name, len(line))
+            logger.debug("Logged missed intent to %s (%d bytes)", blob_name, len(line))
         except Exception:
             logger.warning("Failed to log missed intent to blob storage", exc_info=True)
 

@@ -51,4 +51,4 @@ async def push_stats(snapshot: dict[str, Any]) -> None:
                     json={"state": totals.get(key, 0), "attributes": attrs},
                 )
             except Exception:
-                logger.warning("Failed to push %s to HA", entity_id)
+                logger.warning("Failed to push %s to HA", entity_id, exc_info=True)

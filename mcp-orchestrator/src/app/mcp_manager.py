@@ -54,7 +54,7 @@ class MCPManager:
         # Remote connections from config
         # bashio outputs list items as newline-delimited JSON objects, not a JSON array
         raw = os.environ.get("REMOTE_SITES", "").strip()
-        logger.info("REMOTE_SITES env length: %d", len(raw))
+        logger.debug("REMOTE_SITES env length: %d", len(raw))
         if raw:
             remote_servers: list[dict[str, str]] = []
             try:
@@ -73,7 +73,7 @@ class MCPManager:
                             remote_servers.append(json.loads(line))
                         except json.JSONDecodeError:
                             logger.exception("Failed to parse remote server line: %r", line)
-            logger.info("Parsed %d remote server(s)", len(remote_servers))
+            logger.debug("Parsed %d remote server(s)", len(remote_servers))
             for entry in remote_servers:
                 kw_raw = entry.get("keywords", "")
                 keywords = [k.strip().lower() for k in kw_raw.split(",") if k.strip()] if kw_raw else []
@@ -84,7 +84,7 @@ class MCPManager:
                     keywords=keywords,
                 ))
         else:
-            logger.info("No remote MCP servers configured")
+            logger.debug("No remote MCP servers configured")
 
         return servers
 

@@ -26,7 +26,29 @@ from .models import (
 )
 from .remote_logging import RemoteLogger
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+_LOG_LEVEL_MAP = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "warn": logging.WARNING,
+    "error": logging.ERROR,
+}
+
+def _configure_logging() -> None:
+    level_name = os.environ.get("LOG_LEVEL", "info").strip().lower()
+    level = _LOG_LEVEL_MAP.get(level_name, logging.INFO)
+    logging.getLogger().setLevel(level)
+    # httpx and httpcore are extremely noisy at INFO; only show at DEBUG
+    if level > logging.DEBUG:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
+
+_configure_logging()
 logger = logging.getLogger(__name__)
 
 mcp_manager = MCPManager()
@@ -39,7 +61,7 @@ async def _push_stats_safe() -> None:
         try:
             await push_stats(llm_client.stats.snapshot())
         except Exception:
-            logger.warning("Stats push to HA failed")
+            logger.warning("Stats push to HA failed", exc_info=True)
 
 
 async def _stream_and_push(stream: AsyncIterator[str]) -> AsyncIterator[str]:

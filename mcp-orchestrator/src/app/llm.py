@@ -183,14 +183,14 @@ class LLMClient:
         # Check global keywords first — if matched, send all tools
         if user_text and self._global_keywords:
             if any(kw in user_text for kw in self._global_keywords):
-                logger.info("Global keyword matched — sending all tools")
+                logger.debug("Global keyword matched — sending all tools")
                 return None
 
         # Level 1: Check site-specific keywords in user message only
         if user_text and site_keywords:
             matched = self._match_site_keywords(user_text, site_keywords)
             if matched:
-                logger.info("Site keyword matched in user message: %s", matched)
+                logger.debug("Site keyword matched in user message: %s", matched)
                 return matched
 
         # Level 2: Check site-specific keywords in L2 system prompt only
@@ -204,7 +204,7 @@ class LLMClient:
         if system_text and site_keywords:
             matched = self._match_site_keywords(system_text, site_keywords)
             if matched:
-                logger.info("Site keyword matched in system prompt: %s", matched)
+                logger.debug("Site keyword matched in system prompt: %s", matched)
                 return matched
 
         # No keyword match — send all tools
@@ -294,12 +294,14 @@ class LLMClient:
                         logger.exception("Tool call %s failed", tc.function.name)
                         return tc.id, f"Error: {e}"
 
+                for tc in choice.message.tool_calls:
+                    logger.debug("Tool call %s: %s(%s)", tc.id, tc.function.name, tc.function.arguments[:500])
                 results = await asyncio.gather(
                     *[_exec_tool(tc) for tc in choice.message.tool_calls]
                 )
                 total_tool_calls += len(choice.message.tool_calls)
                 for tool_call_id, result in results:
-                    logger.info("Tool result for %s: %s", tool_call_id, str(result)[:200])
+                    logger.debug("Tool result for %s: %s", tool_call_id, str(result)[:500])
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
@@ -426,11 +428,13 @@ class LLMClient:
                         logger.exception("Tool call %s failed", tc["function"]["name"])
                         return tc["id"], f"Error: {e}"
 
+                for tc in sorted_tcs:
+                    logger.debug("Tool call %s: %s(%s)", tc["id"], tc["function"]["name"], tc["function"]["arguments"][:500])
                 results = await asyncio.gather(
                     *[_exec_tool_s(tc) for tc in sorted_tcs]
                 )
                 for tool_call_id, result in results:
-                    logger.info("Tool result for %s: %s", tool_call_id, str(result)[:200])
+                    logger.debug("Tool result for %s: %s", tool_call_id, str(result)[:500])
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
