@@ -158,6 +158,16 @@ class MCPManager:
             logger.warning("Failed to fetch entities for %s", site_name, exc_info=True)
             return ""
 
+        # HA MCP server wraps responses in a JSON envelope:
+        # {"success": true, "result": "- names: ...\n  domain: ..."}
+        # Unwrap to get the actual multi-line context text.
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict) and "result" in parsed:
+                text = parsed["result"]
+        except (json.JSONDecodeError, TypeError):
+            pass
+
         entries: list[str] = []
         current_name = current_domain = None
 
