@@ -100,45 +100,82 @@ class MCPManager:
             self._connection_tasks.append(task)
         await asyncio.gather(*[e.wait() for e in ready_events])
 
+    _RETRY_DELAYS = [5, 10, 30, 60, 120]  # seconds, then repeat last
+
     async def _connection_loop(self, server: MCPServer, ready: asyncio.Event) -> None:
-        """Manage a single MCP connection in its own task so context enter/exit stay in the same task."""
-        try:
-            headers = {"Authorization": f"Bearer {server.token}"}
-            async with streamablehttp_client(server.url, headers=headers) as (read, write, _):
-                async with ClientSession(read, write) as session:
-                    await session.initialize()
-                    server.session = session
-                    server._connected = True
+        """Manage a single MCP connection with automatic reconnection on failure."""
+        attempt = 0
+        site_type = "local" if server.url.startswith("http://supervisor") else "remote"
+        site_label = f" at {server.url}" if site_type == "remote" else " via Supervisor API"
 
-                    # Discover tools
-                    result = await session.list_tools()
-                    server.tools = [
-                        {
-                            "name": tool.name,
-                            "description": tool.description or "",
-                            "inputSchema": tool.inputSchema,
-                        }
-                        for tool in result.tools
-                    ]
+        while not self._shutdown_event.is_set():
+            try:
+                headers = {"Authorization": f"Bearer {server.token}"}
+                async with streamablehttp_client(server.url, headers=headers) as (read, write, _):
+                    async with ClientSession(read, write) as session:
+                        await session.initialize()
+                        server.session = session
+                        server._connected = True
+                        attempt = 0  # reset on success
 
-                    self._servers[server.name] = server
+                        # Discover tools
+                        result = await session.list_tools()
+                        server.tools = [
+                            {
+                                "name": tool.name,
+                                "description": tool.description or "",
+                                "inputSchema": tool.inputSchema,
+                            }
+                            for tool in result.tools
+                        ]
 
-                    # Cache controllable entity names for prompt injection
-                    server.entities = await self._cache_entities(session, server.name)
+                        self._servers[server.name] = server
 
-                    logger.info(
-                        "Connected to %s MCP server (%s)%s — %d tools, %d entity chars",
-                        "local" if server.url.startswith("http://supervisor") else "remote",
-                        server.name,
-                        f" at {server.url}" if not server.url.startswith("http://supervisor") else " via Supervisor API",
-                        len(server.tools),
-                        len(server.entities),
+                        # Cache controllable entity names for prompt injection
+                        server.entities = await self._cache_entities(session, server.name)
+
+                        logger.info(
+                            "Connected to %s MCP server (%s)%s — %d tools, %d entity chars",
+                            site_type, server.name, site_label,
+                            len(server.tools), len(server.entities),
+                        )
+                        ready.set()
+                        await self._shutdown_event.wait()
+                        return  # clean shutdown
+
+            except BaseException as exc:
+                # Clean up stale state so the site isn't listed while disconnected
+                server.session = None
+                server._connected = False
+                server.tools = []
+                server.entities = ""
+                self._servers.pop(server.name, None)
+
+                delay = self._RETRY_DELAYS[min(attempt, len(self._RETRY_DELAYS) - 1)]
+                exc_name = type(exc).__name__
+                if attempt == 0:
+                    logger.warning(
+                        "Failed to connect to %s MCP server (%s)%s: %s — retrying in %ds",
+                        site_type, server.name, site_label, exc_name, delay,
                     )
-                    ready.set()
-                    await self._shutdown_event.wait()
-        except BaseException:
-            logger.exception("Failed to connect to MCP server %s at %s", server.name, server.url)
-            ready.set()
+                else:
+                    logger.warning(
+                        "Reconnect attempt %d for %s MCP server (%s) failed: %s — retrying in %ds",
+                        attempt, site_type, server.name, exc_name, delay,
+                    )
+
+                # Signal ready after first failure so startup isn't blocked forever
+                ready.set()
+                attempt += 1
+
+                # Wait for retry delay or shutdown, whichever comes first
+                try:
+                    await asyncio.wait_for(
+                        self._shutdown_event.wait(), timeout=delay
+                    )
+                    return  # shutdown requested during wait
+                except asyncio.TimeoutError:
+                    pass  # retry delay elapsed, try again
 
     _CONTROLLABLE_DOMAINS = frozenset({
         "switch", "light", "climate", "media_player", "vacuum", "cover", "fan", "lock",
