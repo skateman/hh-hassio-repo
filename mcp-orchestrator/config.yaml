@@ -1,5 +1,5 @@
 name: Azure OpenAI MCP Orchestrator
-version: 0.4.1
+version: 0.4.2
 slug: mcp-orchestrator
 description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
 arch:

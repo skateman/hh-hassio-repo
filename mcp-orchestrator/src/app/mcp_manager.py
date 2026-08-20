@@ -4,20 +4,48 @@ import asyncio
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, AsyncIterator
 
 from mcp import ClientSession
 try:
-    from mcp.client.streamable_http import streamable_http_client
+    from mcp.client.streamable_http import (
+        create_mcp_http_client,
+        streamable_http_client,
+    )
+    _MCP_V2 = True
 except ImportError:
     from mcp.client.streamable_http import (
         streamablehttp_client as streamable_http_client,
     )
+    create_mcp_http_client = None
+    _MCP_V2 = False
 
 logger = logging.getLogger(__name__)
 
 SEPARATOR = "__"
+
+
+@asynccontextmanager
+async def _open_streamable_http(
+    url: str, headers: dict[str, str]
+) -> AsyncIterator[tuple[Any, Any, Any]]:
+    if _MCP_V2:
+        async with create_mcp_http_client(headers=headers) as http_client:
+            async with streamable_http_client(
+                url, http_client=http_client
+            ) as streams:
+                yield streams[0], streams[1], None
+        return
+
+    async with streamable_http_client(url, headers=headers) as streams:
+        yield streams
+
+
+def _tool_input_schema(tool: Any) -> dict[str, Any]:
+    schema = getattr(tool, "input_schema", None)
+    return schema if schema is not None else tool.inputSchema
 
 
 @dataclass
@@ -116,8 +144,8 @@ class MCPManager:
         while not self._shutdown_event.is_set():
             try:
                 headers = {"Authorization": f"Bearer {server.token}"}
-                async with streamable_http_client(
-                    server.url, headers=headers
+                async with _open_streamable_http(
+                    server.url, headers
                 ) as (read, write, _):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
@@ -131,7 +159,7 @@ class MCPManager:
                             {
                                 "name": tool.name,
                                 "description": tool.description or "",
-                                "inputSchema": tool.inputSchema,
+                                "inputSchema": _tool_input_schema(tool),
                             }
                             for tool in result.tools
                         ]
