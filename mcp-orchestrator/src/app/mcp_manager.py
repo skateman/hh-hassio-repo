@@ -8,7 +8,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
+try:
+    from mcp.client.streamable_http import streamable_http_client
+except ImportError:
+    from mcp.client.streamable_http import (
+        streamablehttp_client as streamable_http_client,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +116,9 @@ class MCPManager:
         while not self._shutdown_event.is_set():
             try:
                 headers = {"Authorization": f"Bearer {server.token}"}
-                async with streamablehttp_client(server.url, headers=headers) as (read, write, _):
+                async with streamable_http_client(
+                    server.url, headers=headers
+                ) as (read, write, _):
                     async with ClientSession(read, write) as session:
                         await session.initialize()
                         server.session = session
