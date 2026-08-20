@@ -25,7 +25,8 @@ The orchestrator acts as a central hub:
 | `system_prompt` | str | Master system prompt prepended to every request |
 | `global_keywords` | str | Comma-separated keywords that trigger sending all sites' tools |
 | `max_tool_iterations` | int | Max tool-calling loop iterations (1–50, default: 10) |
-| `remote_logging_connection_string` | password | Azure Blob Storage connection string for remote logging. When set, missed-intent events are logged to blob storage for prompt analysis. Leave empty to disable (default). |
+| `remote_logging_connection_string` | password | Azure Blob Storage connection string or container SAS URL for remote interaction logging. Leave empty to disable (default). |
+| `remote_logging_mode` | list | `missed` keeps the compact, missed-intent-only records from earlier releases (backward-compatible default); `all` logs every completed interaction and its full trace. |
 | `api_key` | password | Optional API key to protect the Ollama-compatible endpoint. When set, remote clients must send `Authorization: Bearer <key>`. Requests from the local HA (Supervisor network) are always allowed without a key. |
 
 ### Tool Filtering
@@ -81,6 +82,7 @@ system_prompt: >-
   Use GetLiveContext only when you need current sensor readings (temperature, humidity, state). Never invent entity names.
 global_keywords: "everywhere,all sites,all homes"
 max_tool_iterations: 10
+remote_logging_mode: "all"
 ```
 
 The local site (where the add-on runs) connects automatically via the Supervisor API — no URL or token needed.
@@ -122,42 +124,56 @@ On each remote HA site:
 
 ## Remote Logging
 
-The orchestrator can optionally log **missed intents** — voice requests where tools were available but the model responded with text instead of calling any tool. These events help identify gaps in the system prompt or entity exposure.
+With `remote_logging_mode: all`, the orchestrator logs **every completed interaction**, including requests that used tools, requests that did not use tools, tool failures, and requests that reached the tool-iteration limit. The complete execution trace helps identify prompt-routing issues, incorrect arguments, unexpected tool results, entity-exposure gaps, and successful patterns worth preserving.
 
-**Privacy note:** When enabled, the user's voice command and the model's response are stored in Azure Blob Storage. This feature is opt-in and disabled by default.
+**Privacy note:** In `all` mode this feature stores the effective system prompts (including injected entity names), conversation messages, user commands, model responses, available tool names, tool arguments, and full tool results in Azure Blob Storage. This may contain sensitive household and conversation data. Logging is opt-in and disabled by default; use a private container with narrowly scoped access and an appropriate retention policy.
 
 ### Setup
 
-1. Create an Azure Storage Account (or reuse an existing one)
-2. Copy the connection string from **Access keys** in the Azure Portal
-3. Set `remote_logging_connection_string` in the add-on config
+1. Create the `mcp-orchestrator-logs` private blob container in an Azure Storage Account.
+2. Generate a container-scoped SAS URL with **Read**, **Add**, **Create**, **Write**, and **List** permissions.
+3. Set the complete container SAS URL as `remote_logging_connection_string` in the add-on config.
+4. Set `remote_logging_mode` to `all`. The default `missed` mode preserves the previous behavior.
 
-The container (`mcp-orchestrator-logs`) and daily blobs (`logs/YYYY-MM-DD.jsonl`) are created automatically.
+An account connection string is also supported and will create the container automatically if needed. With a container SAS URL, the container must already exist. Daily append blobs are stored as `logs/YYYY-MM-DD.jsonl`.
 
 ### Event Schema
 
-Each JSONL record contains:
+In `all` mode, each version 2 JSONL record contains:
 
 | Field | Description |
 |---|---|
 | `ts` | UTC timestamp |
+| `schema_version` | Event schema version (`2` for complete interaction records) |
+| `event_type` | Event type (`interaction`) |
+| `outcome` | `tools_used`, `no_tool_calls`, `tool_error`, `no_tools_available`, or `max_iterations` |
 | `origin` | Detected origin site (or `null`) |
 | `routed_sites` | Sites whose tools were sent |
 | `user_message` | The voice command text |
+| `request_messages` | Effective request messages, including system prompts and entity injection |
 | `assistant_response` | Model's text reply |
+| `available_tools` | Names of tools sent to the model |
 | `tools_available` | Number of tools sent |
-| `tool_calls_made` | Always `0` (missed intent) |
-| `prompt_tokens` | Input tokens used |
-| `completion_tokens` | Output tokens used |
+| `tool_calls` | Ordered trace with iteration, name, arguments, result, and error |
+| `tool_calls_made` | Number of tool calls |
+| `iterations` | Number of Azure OpenAI calls made |
+| `duration_ms` | End-to-end model/tool-loop duration |
+| `prompt_tokens` | Total input tokens across all iterations |
+| `completion_tokens` | Total output tokens across all iterations |
+| `total_tokens` | Combined token usage across all iterations |
 
 ### Analyzing Logs
 
-Use the `fetch-logs` tool in the prompt-refinement MCP server to retrieve and review missed intents:
+Use the dependency-free `fetch-logs` tool in the prompt-refinement MCP server to retrieve and review interactions. It accepts the same container SAS URL through `REMOTE_LOGGING_CONNECTION_STRING`:
 
 ```
 fetch-logs(date="2026-04-17")
-fetch-logs(date_from="2026-04-14", date_to="2026-04-17")
+fetch-logs(date_from="2026-04-14", date_to="2026-04-17", outcome="no_tool_calls")
+fetch-logs(date="2026-04-17", limit=20, include_details=true)
+fetch-logs(date="2026-04-17", raw=true)
 ```
+
+Version 1 missed-intent records already stored in the container remain readable and are reported as `outcome=no_tool_calls`.
 
 ## Diagnostics
 

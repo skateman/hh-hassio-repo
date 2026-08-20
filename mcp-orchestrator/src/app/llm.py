@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import logging
 import os
@@ -106,6 +107,12 @@ class LLMClient:
 
         self._system_prompt = os.environ.get("SYSTEM_PROMPT", "")
         self._max_iterations = int(os.environ.get("MAX_TOOL_ITERATIONS", "10"))
+        configured_logging_mode = os.environ.get(
+            "REMOTE_LOGGING_MODE", "missed"
+        ).lower()
+        self._remote_logging_mode = (
+            configured_logging_mode if configured_logging_mode == "all" else "missed"
+        )
 
         # Global keywords — if any appear in the user message, send all tools
         gk_raw = os.environ.get("GLOBAL_KEYWORDS", "").strip()
@@ -113,17 +120,24 @@ class LLMClient:
 
         self.stats = StatsTracker()
 
-    def _emit_missed_intent(
+    def _emit_interaction(
         self,
         incoming: list[ChatMessage],
+        request_messages: list[dict[str, Any]],
         response_text: str,
         origin: str | None,
         sites: list[str] | None,
-        tools_count: int,
+        available_tools: list[str],
+        tool_calls: list[dict[str, Any]],
+        tool_calls_made: int,
         prompt_tokens: int,
         completion_tokens: int,
+        total_tokens: int,
+        iterations: int,
+        duration_ms: int,
+        outcome: str,
     ) -> None:
-        """Log a missed-intent event if remote logging is enabled."""
+        """Log a completed interaction if remote logging is enabled."""
         if not self._remote_logger:
             return
         user_msg = ""
@@ -131,16 +145,51 @@ class LLMClient:
             if msg.role == "user" and msg.content:
                 user_msg = msg.content
                 break
-        self._remote_logger.log_missed_intent_bg({
+        if self._remote_logging_mode != "all":
+            if outcome != "no_tool_calls":
+                return
+            self._remote_logger.log_event_bg({
+                "origin": origin,
+                "routed_sites": sites or self._mcp.connected_sites,
+                "user_message": user_msg,
+                "assistant_response": response_text,
+                "tools_available": len(available_tools),
+                "tool_calls_made": 0,
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+            })
+            return
+        self._remote_logger.log_event_bg({
+            "schema_version": 2,
+            "event_type": "interaction",
+            "outcome": outcome,
             "origin": origin,
             "routed_sites": sites or self._mcp.connected_sites,
             "user_message": user_msg,
+            "request_messages": request_messages,
             "assistant_response": response_text,
-            "tools_available": tools_count,
-            "tool_calls_made": 0,
+            "available_tools": available_tools,
+            "tools_available": len(available_tools),
+            "tool_calls": tool_calls,
+            "tool_calls_made": tool_calls_made,
+            "iterations": iterations,
+            "duration_ms": duration_ms,
             "prompt_tokens": prompt_tokens,
             "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
         })
+
+    @staticmethod
+    def _interaction_outcome(
+        available_tools: list[str], tool_calls_made: int, had_tool_error: bool
+    ) -> str:
+        if had_tool_error:
+            return "tool_error"
+        if tool_calls_made:
+            return "tools_used"
+        if available_tools:
+            return "no_tool_calls"
+        return "no_tools_available"
 
     def _detect_origin_site(self, messages: list[ChatMessage]) -> str | None:
         """Detect the origin site from system messages (set via Ollama Instructions)."""
@@ -247,11 +296,22 @@ class LLMClient:
     async def chat(self, incoming: list[ChatMessage]) -> ChatCompletionResponse:
         sites = self._select_sites(incoming)
         messages = self._build_messages(incoming, sites)
+        capture_full_trace = bool(
+            self._remote_logger and self._remote_logging_mode == "all"
+        )
+        request_messages = copy.deepcopy(messages) if capture_full_trace else []
         tools = self._mcp.get_all_tools_openai(sites)
+        available_tools = [tool["function"]["name"] for tool in tools]
         origin = self._detect_origin_site(incoming)
+        tool_trace: list[dict[str, Any]] = []
         total_tool_calls = 0
+        had_tool_error = False
+        prompt_tokens = completion_tokens = total_tokens = 0
+        iterations = 0
+        started_at = time.monotonic()
 
         for iteration in range(self._max_iterations):
+            iterations = iteration + 1
             kwargs: dict[str, Any] = {
                 **self._chat_kwargs,
                 "model": self._deployment,
@@ -262,6 +322,10 @@ class LLMClient:
 
             response = await self._client.chat.completions.create(**kwargs)
             choice = response.choices[0]
+            if response.usage:
+                prompt_tokens += response.usage.prompt_tokens
+                completion_tokens += response.usage.completion_tokens
+                total_tokens += response.usage.total_tokens
 
             if choice.finish_reason == "tool_calls" or (
                 choice.message.tool_calls and len(choice.message.tool_calls) > 0
@@ -289,19 +353,42 @@ class LLMClient:
                 async def _exec_tool(tc):
                     try:
                         args = json.loads(tc.function.arguments)
-                        return tc.id, await self._mcp.call_tool(tc.function.name, args)
+                        result = await self._mcp.call_tool(tc.function.name, args)
+                        return tc.id, result, None
                     except Exception as e:
                         logger.exception("Tool call %s failed", tc.function.name)
-                        return tc.id, f"Error: {e}"
+                        return tc.id, f"Error: {e}", str(e)
 
                 for tc in choice.message.tool_calls:
-                    logger.debug("Tool call %s: %s(%s)", tc.id, tc.function.name, tc.function.arguments[:500])
+                    logger.debug(
+                        "Tool call %s: %s(%s)",
+                        tc.id,
+                        tc.function.name,
+                        tc.function.arguments[:500],
+                    )
                 results = await asyncio.gather(
                     *[_exec_tool(tc) for tc in choice.message.tool_calls]
                 )
-                total_tool_calls += len(choice.message.tool_calls)
-                for tool_call_id, result in results:
+                total_tool_calls += len(results)
+                for tc, (tool_call_id, result, error) in zip(
+                    choice.message.tool_calls, results
+                ):
                     logger.debug("Tool result for %s: %s", tool_call_id, str(result)[:500])
+                    had_tool_error = had_tool_error or error is not None
+                    if capture_full_trace:
+                        try:
+                            arguments: Any = json.loads(tc.function.arguments)
+                        except json.JSONDecodeError:
+                            arguments = tc.function.arguments
+                        tool_trace.append({
+                            "iteration": iterations,
+                            "id": tool_call_id,
+                            "name": tc.function.name,
+                            "arguments": arguments,
+                            "result": str(result),
+                            "error": error,
+                            "assistant_content": choice.message.content or "",
+                        })
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
@@ -309,42 +396,85 @@ class LLMClient:
                     })
             else:
                 # Final text response
-                pt = response.usage.prompt_tokens if response.usage else 0
-                ct = response.usage.completion_tokens if response.usage else 0
-                tt = response.usage.total_tokens if response.usage else 0
-                self.stats.record(origin, pt, ct, tt, total_tool_calls)
-                if total_tool_calls == 0 and tools:
-                    self._emit_missed_intent(
-                        incoming, choice.message.content or "", origin, sites,
-                        len(tools), pt, ct,
-                    )
+                response_text = choice.message.content or ""
+                self.stats.record(
+                    origin,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    total_tool_calls,
+                )
+                self._emit_interaction(
+                    incoming=incoming,
+                    request_messages=request_messages,
+                    response_text=response_text,
+                    origin=origin,
+                    sites=sites,
+                    available_tools=available_tools,
+                    tool_calls=tool_trace,
+                    tool_calls_made=total_tool_calls,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    iterations=iterations,
+                    duration_ms=round((time.monotonic() - started_at) * 1000),
+                    outcome=self._interaction_outcome(
+                        available_tools, total_tool_calls, had_tool_error
+                    ),
+                )
                 return ChatCompletionResponse(
                     model=self._deployment,
                     choices=[
                         Choice(
                             message=ChoiceMessage(
                                 role="assistant",
-                                content=choice.message.content or "",
+                                content=response_text,
                             ),
                             finish_reason=choice.finish_reason or "stop",
                         )
                     ],
                     usage=Usage(
-                        prompt_tokens=pt,
-                        completion_tokens=ct,
-                        total_tokens=tt,
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=total_tokens,
                     ),
                 )
 
         # Max iterations reached — return whatever we have
-        self.stats.record(origin, 0, 0, 0, total_tool_calls)
+        response_text = (
+            "I reached the maximum number of tool-calling iterations. "
+            "Please try again with a simpler request."
+        )
+        self.stats.record(
+            origin,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            total_tool_calls,
+        )
+        self._emit_interaction(
+            incoming=incoming,
+            request_messages=request_messages,
+            response_text=response_text,
+            origin=origin,
+            sites=sites,
+            available_tools=available_tools,
+            tool_calls=tool_trace,
+            tool_calls_made=total_tool_calls,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            iterations=iterations,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+            outcome="max_iterations",
+        )
         return ChatCompletionResponse(
             model=self._deployment,
             choices=[
                 Choice(
                     message=ChoiceMessage(
                         role="assistant",
-                        content="I reached the maximum number of tool-calling iterations. Please try again with a simpler request.",
+                        content=response_text,
                     ),
                     finish_reason="stop",
                 )
@@ -356,12 +486,22 @@ class LLMClient:
     ) -> AsyncIterator[str]:
         sites = self._select_sites(incoming)
         messages = self._build_messages(incoming, sites)
+        capture_full_trace = bool(
+            self._remote_logger and self._remote_logging_mode == "all"
+        )
+        request_messages = copy.deepcopy(messages) if capture_full_trace else []
         tools = self._mcp.get_all_tools_openai(sites)
+        available_tools = [tool["function"]["name"] for tool in tools]
         origin = self._detect_origin_site(incoming)
+        tool_trace: list[dict[str, Any]] = []
         total_tool_calls = 0
-        last_usage = None
+        had_tool_error = False
+        prompt_tokens = completion_tokens = total_tokens = 0
+        iterations = 0
+        started_at = time.monotonic()
 
         for iteration in range(self._max_iterations):
+            iterations = iteration + 1
             kwargs: dict[str, Any] = {
                 **self._chat_kwargs,
                 "model": self._deployment,
@@ -374,10 +514,11 @@ class LLMClient:
 
             tool_calls_acc: dict[int, dict[str, Any]] = {}
             content_parts: list[str] = []
+            iteration_usage = None
 
             async for chunk in await self._client.chat.completions.create(**kwargs):
                 if chunk.usage:
-                    last_usage = chunk.usage
+                    iteration_usage = chunk.usage
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -408,9 +549,13 @@ class LLMClient:
                             if tc_delta.function.arguments:
                                 tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
 
+            if iteration_usage:
+                prompt_tokens += iteration_usage.prompt_tokens
+                completion_tokens += iteration_usage.completion_tokens
+                total_tokens += iteration_usage.total_tokens
+
             if tool_calls_acc:
                 sorted_tcs = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
-                total_tool_calls += len(sorted_tcs)
                 assistant_msg: dict[str, Any] = {
                     "role": "assistant",
                     "tool_calls": sorted_tcs,
@@ -423,18 +568,40 @@ class LLMClient:
                 async def _exec_tool_s(tc):
                     try:
                         args = json.loads(tc["function"]["arguments"])
-                        return tc["id"], await self._mcp.call_tool(tc["function"]["name"], args)
+                        result = await self._mcp.call_tool(tc["function"]["name"], args)
+                        return tc["id"], result, None
                     except Exception as e:
                         logger.exception("Tool call %s failed", tc["function"]["name"])
-                        return tc["id"], f"Error: {e}"
+                        return tc["id"], f"Error: {e}", str(e)
 
                 for tc in sorted_tcs:
-                    logger.debug("Tool call %s: %s(%s)", tc["id"], tc["function"]["name"], tc["function"]["arguments"][:500])
+                    logger.debug(
+                        "Tool call %s: %s(%s)",
+                        tc["id"],
+                        tc["function"]["name"],
+                        tc["function"]["arguments"][:500],
+                    )
                 results = await asyncio.gather(
                     *[_exec_tool_s(tc) for tc in sorted_tcs]
                 )
-                for tool_call_id, result in results:
+                total_tool_calls += len(results)
+                for tc, (tool_call_id, result, error) in zip(sorted_tcs, results):
                     logger.debug("Tool result for %s: %s", tool_call_id, str(result)[:500])
+                    had_tool_error = had_tool_error or error is not None
+                    if capture_full_trace:
+                        try:
+                            arguments = json.loads(tc["function"]["arguments"])
+                        except json.JSONDecodeError:
+                            arguments = tc["function"]["arguments"]
+                        tool_trace.append({
+                            "iteration": iterations,
+                            "id": tool_call_id,
+                            "name": tc["function"]["name"],
+                            "arguments": arguments,
+                            "result": str(result),
+                            "error": error,
+                            "assistant_content": "".join(content_parts),
+                        })
                     messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call_id,
@@ -443,20 +610,32 @@ class LLMClient:
                 continue
 
             # Done — send final chunk
+            response_text = "".join(content_parts)
             self.stats.record(
                 origin,
-                last_usage.prompt_tokens if last_usage else 0,
-                last_usage.completion_tokens if last_usage else 0,
-                last_usage.total_tokens if last_usage else 0,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
                 total_tool_calls,
             )
-            if total_tool_calls == 0 and tools:
-                self._emit_missed_intent(
-                    incoming, "".join(content_parts), origin, sites,
-                    len(tools),
-                    last_usage.prompt_tokens if last_usage else 0,
-                    last_usage.completion_tokens if last_usage else 0,
-                )
+            self._emit_interaction(
+                incoming=incoming,
+                request_messages=request_messages,
+                response_text=response_text,
+                origin=origin,
+                sites=sites,
+                available_tools=available_tools,
+                tool_calls=tool_trace,
+                tool_calls_made=total_tool_calls,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                iterations=iterations,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                outcome=self._interaction_outcome(
+                    available_tools, total_tool_calls, had_tool_error
+                ),
+            )
             yield json.dumps({
                 "model": "ha-orchestrator",
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
@@ -466,16 +645,33 @@ class LLMClient:
             return
 
         # Max iterations
+        response_text = "I reached the maximum number of tool-calling iterations."
         self.stats.record(
             origin,
-            last_usage.prompt_tokens if last_usage else 0,
-            last_usage.completion_tokens if last_usage else 0,
-            last_usage.total_tokens if last_usage else 0,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
             total_tool_calls,
+        )
+        self._emit_interaction(
+            incoming=incoming,
+            request_messages=request_messages,
+            response_text=response_text,
+            origin=origin,
+            sites=sites,
+            available_tools=available_tools,
+            tool_calls=tool_trace,
+            tool_calls_made=total_tool_calls,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            iterations=iterations,
+            duration_ms=round((time.monotonic() - started_at) * 1000),
+            outcome="max_iterations",
         )
         yield json.dumps({
             "model": "ha-orchestrator",
             "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
-            "message": {"role": "assistant", "content": "I reached the maximum number of tool-calling iterations."},
+            "message": {"role": "assistant", "content": response_text},
             "done": True,
         }) + "\n"

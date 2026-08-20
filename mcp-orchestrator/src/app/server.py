@@ -79,8 +79,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     conn_str = os.environ.get("REMOTE_LOGGING_CONNECTION_STRING", "").strip()
     if conn_str:
+        logging_mode = (
+            "all"
+            if os.environ.get("REMOTE_LOGGING_MODE", "missed").lower() == "all"
+            else "missed"
+        )
         remote_logger = RemoteLogger(conn_str)
-        logger.info("Remote logging enabled (Azure Blob Storage)")
+        logger.info(
+            "Remote logging enabled (Azure Blob Storage, mode=%s)",
+            logging_mode,
+        )
     else:
         logger.info("Remote logging disabled (no connection string)")
 

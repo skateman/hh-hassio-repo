@@ -1,8 +1,8 @@
-"""Opt-in remote logging of missed intents to Azure Blob Storage.
+"""Opt-in interaction logging to Azure Blob Storage.
 
-When enabled, every voice request that had tools available but made zero
-tool calls is logged as a JSONL record to an append blob.  Daily rotation
-keeps one blob per day: ``logs/YYYY-MM-DD.jsonl``.
+When enabled, every completed voice-assistant interaction is logged as a JSONL
+record to an append blob. Daily rotation keeps one blob per day:
+``logs/YYYY-MM-DD.jsonl``.
 
 The feature is entirely opt-in: unless a valid connection string is
 provided at startup, the logger stays disabled.
@@ -40,52 +40,60 @@ class RemoteLogger:
         # Container-scoped SAS URLs point at an existing container,
         # so we can skip the ensure step.
         self._container_ensured = connection_string.startswith("http")
+        self._append_lock = asyncio.Lock()
+        self._pending: set[asyncio.Task[None]] = set()
 
     async def _ensure_container(self) -> None:
         """Create the blob container if it does not exist yet."""
         if self._container_ensured:
             return
+        from azure.core.exceptions import ResourceExistsError
+
         try:
             await self._container.create_container()
             logger.info("Created blob container %s", _CONTAINER_NAME)
-        except Exception:
-            # 409 Conflict = already exists, which is fine
+        except ResourceExistsError:
             pass
         self._container_ensured = True
 
-    async def log_missed_intent(self, event: dict[str, Any]) -> None:
+    async def log_event(self, event: dict[str, Any]) -> None:
         """Append a single JSONL record to today's blob.
 
         This is fire-and-forget: exceptions are caught and logged locally
         but never propagated to the caller.
         """
         try:
-            await self._ensure_container()
+            from azure.core.exceptions import ResourceNotFoundError
 
             now = datetime.now(timezone.utc)
-            event["ts"] = now.isoformat()
+            record = {"ts": now.isoformat(), **event}
             blob_name = f"logs/{now.strftime('%Y-%m-%d')}.jsonl"
-            line = json.dumps(event, ensure_ascii=False) + "\n"
+            line = json.dumps(record, ensure_ascii=False) + "\n"
 
-            blob = self._container.get_blob_client(blob_name)
-            try:
-                await blob.append_block(line.encode())
-            except Exception:
-                # Blob doesn't exist yet — create as append blob, then write
-                await blob.create_append_blob()
-                await blob.append_block(line.encode())
+            async with self._append_lock:
+                await self._ensure_container()
+                blob = self._container.get_blob_client(blob_name)
+                try:
+                    await blob.append_block(line.encode())
+                except ResourceNotFoundError:
+                    await blob.create_append_blob()
+                    await blob.append_block(line.encode())
 
-            logger.debug("Logged missed intent to %s (%d bytes)", blob_name, len(line))
+            logger.debug("Logged interaction to %s (%d bytes)", blob_name, len(line))
         except Exception:
-            logger.warning("Failed to log missed intent to blob storage", exc_info=True)
+            logger.warning("Failed to log interaction to blob storage", exc_info=True)
 
-    def log_missed_intent_bg(self, event: dict[str, Any]) -> None:
-        """Schedule log_missed_intent as a background task (non-blocking)."""
-        asyncio.create_task(self.log_missed_intent(event))
+    def log_event_bg(self, event: dict[str, Any]) -> None:
+        """Schedule an interaction log write without delaying the response."""
+        task = asyncio.create_task(self.log_event(event))
+        self._pending.add(task)
+        task.add_done_callback(self._pending.discard)
 
     async def close(self) -> None:
-        """Close the underlying container client."""
+        """Flush pending records and close the underlying container client."""
+        if self._pending:
+            await asyncio.gather(*self._pending)
         try:
             await self._container.close()
         except Exception:
-            pass
+            logger.warning("Failed to close remote logging client", exc_info=True)

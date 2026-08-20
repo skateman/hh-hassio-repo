@@ -12,6 +12,7 @@ export SYSTEM_PROMPT="$(bashio::config 'system_prompt')"
 export GLOBAL_KEYWORDS="$(bashio::config 'global_keywords')"
 export MAX_TOOL_ITERATIONS="$(bashio::config 'max_tool_iterations')"
 export REMOTE_LOGGING_CONNECTION_STRING="$(bashio::config 'remote_logging_connection_string')"
+export REMOTE_LOGGING_MODE="$(bashio::config 'remote_logging_mode')"
 export API_KEY="$(bashio::config 'api_key')"
 export LOG_LEVEL="$(bashio::config 'log_level')"
 
