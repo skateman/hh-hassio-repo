@@ -1,5 +1,5 @@
 name: Azure OpenAI MCP Orchestrator
-version: 0.4.2
+version: 0.5.0
 slug: mcp-orchestrator
 description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
 arch:
@@ -21,6 +21,7 @@ options:
     Use the default site's tools unless the user explicitly names another site.
   global_keywords: ""
   max_tool_iterations: 10
+  entity_context_max_results: 5
   remote_logging_connection_string: ""
   remote_logging_mode: "missed"
   api_key: ""
@@ -41,6 +42,7 @@ schema:
   system_prompt: str
   global_keywords: "str?"
   max_tool_iterations: "int(1,50)"
+  entity_context_max_results: "int(1,10)"
   remote_logging_connection_string: "password?"
   remote_logging_mode: "list(missed|all)"
   api_key: "password?"

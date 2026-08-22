@@ -5,6 +5,7 @@ import copy
 import json
 import logging
 import os
+import re
 import time
 import unicodedata
 from dataclasses import dataclass
@@ -23,6 +24,19 @@ from .models import (
 from .remote_logging import RemoteLogger
 
 logger = logging.getLogger(__name__)
+
+_LEGACY_SITE_RESPONSE_RULE = (
+    "Válaszban mindig annak a helyszínnek a nevét használd, amelyik helyszín "
+    "eszközétől az adat érkezett (a tool prefix alapján), NEM az origin "
+    "helyszínt."
+)
+_LOCAL_SITE_RESPONSE_RULE = (
+    "Ha a használt tool helyszíne megegyezik az origin helyszínnel, a "
+    "válaszban NE nevezd meg a helyszínt; csak az eredményt vagy a végrehajtott "
+    "műveletet mondd. A helyszínt csak cross-site kérésnél vagy több helyszín "
+    "eredményének összehasonlításakor nevezd meg, mindig a tool prefix szerinti "
+    "magyar névvel."
+)
 
 
 def _normalize(text: str) -> str:
@@ -107,6 +121,9 @@ class LLMClient:
 
         self._system_prompt = os.environ.get("SYSTEM_PROMPT", "")
         self._max_iterations = int(os.environ.get("MAX_TOOL_ITERATIONS", "10"))
+        self._entity_context_max_results = int(
+            os.environ.get("ENTITY_CONTEXT_MAX_RESULTS", "5")
+        )
         configured_logging_mode = os.environ.get(
             "REMOTE_LOGGING_MODE", "missed"
         ).lower()
@@ -119,6 +136,35 @@ class LLMClient:
         self._global_keywords = [_normalize(k.strip()) for k in gk_raw.split(",") if k.strip()] if gk_raw else []
 
         self.stats = StatsTracker()
+
+    @staticmethod
+    def _last_user_text(messages: list[ChatMessage]) -> str:
+        for message in reversed(messages):
+            if message.role == "user" and message.content:
+                return message.content
+        return ""
+
+    @staticmethod
+    def _strip_origin_marker(text: str, origin: str | None) -> str:
+        if not origin:
+            return text
+        site = re.escape(origin)
+        patterns = (
+            rf"This request originates from (?:the )?{site}(?: site)?\.?",
+            (
+                rf"Ez a kérés a[z]?\s+{site}\s+"
+                rf"(?:telephelyről|helyszínről)\s+érkezett\.?"
+            ),
+        )
+        cleaned = text
+        for pattern in patterns:
+            cleaned = re.sub(
+                pattern,
+                "",
+                cleaned,
+                flags=re.IGNORECASE,
+            )
+        return re.sub(r"[ \t]{2,}", " ", cleaned).strip()
 
     def _emit_interaction(
         self,
@@ -223,11 +269,7 @@ class LLMClient:
         site_keywords = self._mcp.site_keywords
 
         # Find the last user message
-        user_text = ""
-        for msg in reversed(incoming):
-            if msg.role == "user" and msg.content:
-                user_text = _normalize(msg.content)
-                break
+        user_text = _normalize(self._last_user_text(incoming))
 
         # Check global keywords first — if matched, send all tools
         if user_text and self._global_keywords:
@@ -263,17 +305,41 @@ class LLMClient:
         self, incoming: list[ChatMessage], sites: list[str] | None = None
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
+        origin = self._detect_origin_site(incoming)
 
         # Master system prompt always first.
         # If the prompt contains an {entities} placeholder, substitute it with
         # the cached entity context (opt-in inline injection).  When the
         # placeholder is absent, entities are not injected at all.
         if self._system_prompt:
-            master = self._system_prompt
+            master = self._system_prompt.replace(
+                _LEGACY_SITE_RESPONSE_RULE,
+                _LOCAL_SITE_RESPONSE_RULE,
+            )
             if "{entities}" in master:
-                entity_ctx = self._mcp.get_entity_context(sites)
+                entity_ctx = self._mcp.get_entity_context(
+                    sites,
+                    query=self._last_user_text(incoming),
+                    limit=self._entity_context_max_results,
+                )
+                lookup_policy = (
+                    "This is a non-exhaustive candidate list. If the exact "
+                    "entity is present, use it directly with the action tool or "
+                    "GetEntityState. If absent, call the site's SearchEntities "
+                    "tool with an English query that omits the site name, and "
+                    "do not report it missing before that search returns no "
+                    "match. When the tool site equals the request's origin "
+                    "site, omit the site name from the response; mention sites "
+                    "only for cross-site or multi-site results."
+                )
                 master = master.replace(
-                    "{entities}", entity_ctx or "(no entities available)"
+                    "{entities}",
+                    (
+                        entity_ctx
+                        or "(no relevant entities were preselected)"
+                    )
+                    + "\n"
+                    + lookup_policy,
                 )
             messages.append({"role": "system", "content": master})
 
@@ -282,7 +348,12 @@ class LLMClient:
         for msg in incoming:
             m: dict[str, Any] = {"role": msg.role}
             if msg.content is not None:
-                m["content"] = msg.content
+                content = msg.content
+                if msg.role == "system":
+                    content = self._strip_origin_marker(content, origin)
+                    if not content:
+                        continue
+                m["content"] = content
             if msg.tool_call_id is not None:
                 m["tool_call_id"] = msg.tool_call_id
             if msg.name is not None:

@@ -8,7 +8,7 @@ The orchestrator acts as a central hub:
 
 - **Incoming**: Each HA site uses the built-in **Ollama** integration to send requests to the orchestrator's `/api/chat` endpoint.
 - **Outgoing**: The orchestrator connects to each site's MCP server, gathers available tools, namespaces them by site, and uses Azure OpenAI to orchestrate tool-calling across all sites.
-- **Entity caching**: At startup, the orchestrator calls `GetLiveContext` on each site to discover controllable entities (lights, switches, climate, etc.) and injects them into the system prompt. This eliminates round-trips for device commands — the model already knows what it can control.
+- **Targeted entity context**: The orchestrator parses `GetLiveContext` internally, injects only entities relevant to the current utterance, and exposes bounded search/state tools. The complete home snapshot is never sent to Azure OpenAI.
 
 ## Configuration
 
@@ -25,6 +25,7 @@ The orchestrator acts as a central hub:
 | `system_prompt` | str | Master system prompt prepended to every request |
 | `global_keywords` | str | Comma-separated keywords that trigger sending all sites' tools |
 | `max_tool_iterations` | int | Max tool-calling loop iterations (1–50, default: 10) |
+| `entity_context_max_results` | int | Maximum relevant entities preselected per routed site (1–10, default: 5) |
 | `remote_logging_connection_string` | password | Azure Blob Storage connection string or container SAS URL for remote interaction logging. Leave empty to disable (default). |
 | `remote_logging_mode` | list | `missed` keeps the compact, missed-intent-only records from earlier releases (backward-compatible default); `all` logs every completed interaction and its full trace. |
 | `api_key` | password | Optional API key to protect the Ollama-compatible endpoint. When set, remote clients must send `Authorization: Bearer <key>`. Requests from the local HA (Supervisor network) are always allowed without a key. |
@@ -40,18 +41,21 @@ To reduce prompt size and latency, the orchestrator selectively sends only relev
 
 ### Entity Context
 
-After connecting to each site's MCP server, the orchestrator calls `GetLiveContext` and caches the names of **controllable** entities (domains: `switch`, `light`, `climate`, `media_player`, `vacuum`, `cover`, `fan`, `lock`). Sensors and binary sensors are excluded — the model should use `GetLiveContext` at runtime for current state queries.
+After connecting to each site's MCP server, the orchestrator calls `GetLiveContext` internally and parses every exposed entity into a structured cache. The raw zero-argument tool is removed. For compatibility with existing prompts, the model sees a replacement `GetLiveContext(query, domain?, area?, limit?)` façade that always requires a query and returns at most 10 matching states, never the complete snapshot.
 
-The cached entities are injected **inline** into the master system prompt via `{entities}` template substitution. If the system prompt contains `{entities}`, it is replaced with entity lines in `SITE: name [type], name [type], ...` format — one line per site, with the site name in UPPERCASE:
+For each request, entity names and areas are matched against the user utterance with accent-insensitive, typo-tolerant matching plus the prompt's common Hungarian→English smart-home vocabulary. Only the top `entity_context_max_results` candidates per routed site are injected **inline** through `{entities}` in `SITE: name [type], ...` format:
 
 ```
-HOME: Living Room Lamp [light], TV [media_player], Kitchen Lights [light], Gate [switch]
-CABIN: Bedroom Lights [switch], Heater [climate], Terrace Lights [switch]
+HOME: Living Room Lamp [light], Living Room Temperature [sensor]
 ```
 
-If no entities are available, the placeholder is replaced with `(no entities available)`. If the system prompt does **not** contain `{entities}`, no entity injection occurs (opt-in).
+This list is deliberately non-exhaustive. When the correct entity is not preselected, the model uses two virtual tools namespaced to the routed site:
 
-Area names are deliberately omitted from the list to prevent the model from prepending area names to entity names in tool calls (e.g., `"Living Room: 3D Printer"` instead of `"3D Printer"`). Entity context follows the same site filtering as tools — if the request is routed to a single site, only that site's entities are included. This keeps prompt size minimal (~60–160 tokens per site) while eliminating `GetLiveContext` round-trips (~1200 tokens each) for device commands.
+- `SearchEntities(query, domain?, area?, limit?)` refreshes the internal snapshot and returns at most 10 matching names without state data.
+- `GetEntityState(name, domain?, area?)` refreshes the internal snapshot and returns current data for at most 10 exact name matches. Domain and area can disambiguate repeated names. If the name is not exact, it returns a bounded candidate list instead of the full home.
+- `GetLiveContext(query, domain?, area?, limit?)` is a bounded compatibility shortcut for older prompts. New prompts should prefer the two explicit tools above.
+
+Area names participate in matching but are omitted from inline candidates to prevent the model from prepending areas to entity names in control calls. If no candidate matches, `{entities}` tells the model to use `SearchEntities`. If `{entities}` is absent from the system prompt, preselection is disabled but both virtual tools remain available.
 
 ### Example Configuration
 
@@ -76,12 +80,16 @@ system_prompt: >-
   You are a smart home assistant managing three sites: Home, Office, and Cabin.
   Each site has its own set of MCP tools prefixed with its name.
   Tool names include the site prefix (e.g. site__tool). Results from a site's tools always belong to that site.
-  Controllable entities in "SITE: name [type], name [type], ..." format (always call the entity on its own SITE's server):
+  Entities preselected as relevant to this request (this is not a complete list):
   {entities}
   Use only the name part (before the brackets) in the "name" field of tool calls.
-  Use GetLiveContext only when you need current sensor readings (temperature, humidity, state). Never invent entity names.
+  If the exact entity is not listed, use that site's SearchEntities tool with an English query that omits the site name, then copy its exact name into the control tool.
+  For current sensor or device state, use GetEntityState with an exact discovered name.
+  Never invent entity names, and only report an entity as missing after SearchEntities returns no match.
+  Omit the site name when responding about the request's origin site. Mention sites only for cross-site or multi-site results.
 global_keywords: "everywhere,all sites,all homes"
 max_tool_iterations: 10
+entity_context_max_results: 5
 remote_logging_mode: "all"
 ```
 
