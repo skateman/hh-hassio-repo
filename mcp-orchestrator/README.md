@@ -16,9 +16,8 @@ The orchestrator acts as a central hub:
 |---|---|---|
 | `azure_openai_endpoint` | url | Azure OpenAI resource endpoint |
 | `azure_openai_api_key` | password | Azure OpenAI API key |
-| `azure_openai_deployment` | str | Deployment/model name (e.g., `gpt-4o`) |
-| `azure_openai_api_version` | str | API version (default: `2024-10-21`) |
-| `azure_openai_extra` | str | Extra kwargs passed to chat completion calls as a JSON string (e.g., `{"reasoning_effort": "low"}`) |
+| `azure_openai_deployment` | str | Azure OpenAI deployment name |
+| `azure_openai_extra` | str | Native Azure OpenAI request options as JSON (default: `{"reasoning": {"effort": "low"}}`) |
 | `local_site_name` | str | Name for the local HA MCP connection (default: `local`) |
 | `local_site_keywords` | str | Comma-separated keywords that identify the local site in user messages |
 | `remote_sites` | list | Remote site connections (name, url, token, keywords) |
@@ -38,6 +37,14 @@ To reduce prompt size and latency, the orchestrator selectively sends only relev
 2. **Site keywords** — if the user message contains a site-specific keyword (e.g., "brno", "cabin"), only that site's tools are sent.
 3. **Origin detection** — if no keywords match, the orchestrator detects the origin site from the Ollama integration's Instructions (e.g., "This request originates from Home.") and sends only that site's tools.
 4. **Fallback** — if nothing matches, all tools are sent.
+
+### Azure OpenAI
+
+The orchestrator uses Azure's OpenAI-compatible `/openai/v1/` endpoint.
+Requests remain stateless with `store=false`; encrypted reasoning state is
+carried only within the current request's tool loop.
+
+Values in `azure_openai_extra` are passed directly to the Azure OpenAI request.
 
 ### Entity Context
 
@@ -62,9 +69,8 @@ Area names participate in matching but are omitted from inline candidates to pre
 ```yaml
 azure_openai_endpoint: "https://my-resource.openai.azure.com/"
 azure_openai_api_key: "sk-..."
-azure_openai_deployment: "gpt-4o"
-azure_openai_api_version: "2024-10-21"
-azure_openai_extra: '{"reasoning_effort": "low"}'
+azure_openai_deployment: "my-deployment"
+azure_openai_extra: '{"reasoning": {"effort": "low"}}'
 local_site_name: "home"
 local_site_keywords: "home,house,main"
 remote_sites:
@@ -154,7 +160,8 @@ In `all` mode, each version 2 JSONL record contains:
 | `ts` | UTC timestamp |
 | `schema_version` | Event schema version (`2` for complete interaction records) |
 | `event_type` | Event type (`interaction`) |
-| `outcome` | `tools_used`, `no_tool_calls`, `tool_error`, `no_tools_available`, or `max_iterations` |
+| `deployment` | Azure OpenAI deployment name |
+| `outcome` | `tools_used`, `no_tool_calls`, `tool_error`, `no_tools_available`, `model_error`, or `max_iterations` |
 | `origin` | Detected origin site (or `null`) |
 | `routed_sites` | Sites whose tools were sent |
 | `user_message` | The voice command text |

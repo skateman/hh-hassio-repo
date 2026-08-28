@@ -11,7 +11,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import Any, AsyncIterator
 
-from openai import AsyncAzureOpenAI
+from openai import AsyncOpenAI
 
 from .mcp_manager import MCPManager
 from .models import (
@@ -105,19 +105,27 @@ class LLMClient:
     def __init__(self, mcp_manager: MCPManager, remote_logger: RemoteLogger | None = None) -> None:
         self._mcp = mcp_manager
         self._remote_logger = remote_logger
-        self._client = AsyncAzureOpenAI(
-            azure_endpoint=os.environ["AZURE_OPENAI_ENDPOINT"],
-            api_key=os.environ["AZURE_OPENAI_API_KEY"],
-            api_version=os.environ.get("AZURE_OPENAI_API_VERSION", "2024-10-21"),
+        endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
+        api_key = os.environ["AZURE_OPENAI_API_KEY"]
+        self._client = AsyncOpenAI(
+            base_url=f"{endpoint}/openai/v1/",
+            api_key=api_key,
         )
         self._deployment = os.environ["AZURE_OPENAI_DEPLOYMENT"]
+        logger.info(
+            "Azure OpenAI deployment: %s",
+            self._deployment,
+        )
 
-        # Extra kwargs passed through to chat completion calls
-        raw_extra = os.environ.get("AZURE_OPENAI_EXTRA", "{}")
+        # Validate and complete the native Azure OpenAI request options.
+        raw_extra = os.environ.get("AZURE_OPENAI_EXTRA", "").strip() or "{}"
         try:
-            self._chat_kwargs: dict[str, Any] = json.loads(raw_extra)
-        except json.JSONDecodeError:
-            self._chat_kwargs = {}
+            extra: Any = json.loads(raw_extra)
+        except json.JSONDecodeError as exc:
+            raise ValueError("AZURE_OPENAI_EXTRA must be valid JSON") from exc
+        if not isinstance(extra, dict):
+            raise ValueError("AZURE_OPENAI_EXTRA must contain a JSON object")
+        self._request_kwargs = self._prepare_request_kwargs(extra)
 
         self._system_prompt = os.environ.get("SYSTEM_PROMPT", "")
         self._max_iterations = int(os.environ.get("MAX_TOOL_ITERATIONS", "10"))
@@ -136,6 +144,109 @@ class LLMClient:
         self._global_keywords = [_normalize(k.strip()) for k in gk_raw.split(",") if k.strip()] if gk_raw else []
 
         self.stats = StatsTracker()
+
+    @staticmethod
+    def _prepare_request_kwargs(extra: dict[str, Any]) -> dict[str, Any]:
+        kwargs = dict(extra)
+
+        include = kwargs.get("include", [])
+        if not isinstance(include, list):
+            raise ValueError("AZURE_OPENAI_EXTRA 'include' must be a list")
+        if "reasoning.encrypted_content" not in include:
+            kwargs["include"] = [*include, "reasoning.encrypted_content"]
+
+        store = kwargs.pop("store", False)
+        if store is not False and store is not None:
+            raise ValueError(
+                "Requests are always sent with store=false for privacy"
+            )
+        if kwargs.get("background"):
+            raise ValueError(
+                "Background mode requires storage and is unsupported"
+            )
+        if "previous_response_id" in kwargs or "conversation" in kwargs:
+            raise ValueError(
+                "Server-managed conversation state is unsupported; the "
+                "orchestrator carries input items locally"
+            )
+
+        kwargs.pop("stream", None)
+        kwargs.pop("stream_options", None)
+        kwargs.pop("model", None)
+        kwargs.pop("messages", None)
+        kwargs.pop("input", None)
+        kwargs.pop("tools", None)
+        return kwargs
+
+    @staticmethod
+    def _format_tools(
+        tools: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        return [
+            {
+                "type": "function",
+                "name": tool["function"]["name"],
+                "description": tool["function"].get("description", ""),
+                "parameters": tool["function"].get(
+                    "parameters",
+                    {"type": "object", "properties": {}},
+                ),
+            }
+            for tool in tools
+        ]
+
+    @staticmethod
+    def _response_output_items(response: Any) -> list[dict[str, Any]]:
+        return [
+            item.model_dump(mode="json", exclude_none=True)
+            for item in response.output
+        ]
+
+    @staticmethod
+    def _response_tool_calls(response: Any) -> list[Any]:
+        return [
+            item
+            for item in response.output
+            if item.type == "function_call"
+        ]
+
+    @staticmethod
+    def _response_text(response: Any) -> str:
+        if response.output_text:
+            return response.output_text
+        refusals: list[str] = []
+        for item in response.output:
+            for content in getattr(item, "content", []):
+                if getattr(content, "type", "") == "refusal":
+                    refusals.append(content.refusal)
+        return "".join(refusals)
+
+    @staticmethod
+    def _ensure_completed_response(response: Any) -> None:
+        if response.status != "completed":
+            details = (
+                response.error
+                or response.incomplete_details
+                or "no error details"
+            )
+            raise RuntimeError(
+                f"Azure OpenAI returned status {response.status}: {details}"
+            )
+
+    @staticmethod
+    def _ollama_stream_chunk(content: str, *, done: bool) -> str:
+        return json.dumps({
+            "model": "ha-orchestrator",
+            "created_at": time.strftime(
+                "%Y-%m-%dT%H:%M:%S.000000Z",
+                time.gmtime(),
+            ),
+            "message": {"role": "assistant", "content": content},
+            "done": done,
+        }) + "\n"
+
+    async def close(self) -> None:
+        await self._client.close()
 
     @staticmethod
     def _last_user_text(messages: list[ChatMessage]) -> str:
@@ -195,6 +306,7 @@ class LLMClient:
             if outcome != "no_tool_calls":
                 return
             self._remote_logger.log_event_bg({
+                "deployment": self._deployment,
                 "origin": origin,
                 "routed_sites": sites or self._mcp.connected_sites,
                 "user_message": user_msg,
@@ -208,6 +320,7 @@ class LLMClient:
         self._remote_logger.log_event_bg({
             "schema_version": 2,
             "event_type": "interaction",
+            "deployment": self._deployment,
             "outcome": outcome,
             "origin": origin,
             "routed_sites": sites or self._mcp.connected_sites,
@@ -364,15 +477,19 @@ class LLMClient:
 
         return messages
 
-    async def chat(self, incoming: list[ChatMessage]) -> ChatCompletionResponse:
+    async def chat(
+        self, incoming: list[ChatMessage]
+    ) -> ChatCompletionResponse:
         sites = self._select_sites(incoming)
         messages = self._build_messages(incoming, sites)
+        response_input: list[Any] = copy.deepcopy(messages)
         capture_full_trace = bool(
             self._remote_logger and self._remote_logging_mode == "all"
         )
         request_messages = copy.deepcopy(messages) if capture_full_trace else []
-        tools = self._mcp.get_all_tools_openai(sites)
-        available_tools = [tool["function"]["name"] for tool in tools]
+        mcp_tools = self._mcp.get_all_tools_openai(sites)
+        tools = self._format_tools(mcp_tools)
+        available_tools = [tool["name"] for tool in tools]
         origin = self._detect_origin_site(incoming)
         tool_trace: list[dict[str, Any]] = []
         total_tool_calls = 0
@@ -384,134 +501,121 @@ class LLMClient:
         for iteration in range(self._max_iterations):
             iterations = iteration + 1
             kwargs: dict[str, Any] = {
-                **self._chat_kwargs,
+                **self._request_kwargs,
                 "model": self._deployment,
-                "messages": messages,
+                "input": response_input,
+                "store": False,
             }
             if tools:
                 kwargs["tools"] = tools
 
-            response = await self._client.chat.completions.create(**kwargs)
-            choice = response.choices[0]
+            response = await self._client.responses.create(**kwargs)
+            self._ensure_completed_response(response)
             if response.usage:
-                prompt_tokens += response.usage.prompt_tokens
-                completion_tokens += response.usage.completion_tokens
+                prompt_tokens += response.usage.input_tokens
+                completion_tokens += response.usage.output_tokens
                 total_tokens += response.usage.total_tokens
 
-            if choice.finish_reason == "tool_calls" or (
-                choice.message.tool_calls and len(choice.message.tool_calls) > 0
-            ):
-                # Append assistant message with tool calls
-                assistant_msg: dict[str, Any] = {
-                    "role": "assistant",
-                    "tool_calls": [
-                        {
-                            "id": tc.id,
-                            "type": tc.type,
-                            "function": {
-                                "name": tc.function.name,
-                                "arguments": tc.function.arguments,
-                            },
-                        }
-                        for tc in choice.message.tool_calls
-                    ],
-                }
-                if choice.message.content:
-                    assistant_msg["content"] = choice.message.content
-                messages.append(assistant_msg)
+            tool_calls = self._response_tool_calls(response)
+            if tool_calls:
+                response_input.extend(
+                    self._response_output_items(response)
+                )
 
-                # Execute tool calls in parallel
-                async def _exec_tool(tc):
+                async def _exec_tool(call: Any):
                     try:
-                        args = json.loads(tc.function.arguments)
-                        result = await self._mcp.call_tool(tc.function.name, args)
-                        return tc.id, result, None
-                    except Exception as e:
-                        logger.exception("Tool call %s failed", tc.function.name)
-                        return tc.id, f"Error: {e}", str(e)
+                        args = json.loads(call.arguments)
+                        result = await self._mcp.call_tool(call.name, args)
+                        return call.call_id, result, None
+                    except Exception as exc:
+                        logger.exception("Tool call %s failed", call.name)
+                        return call.call_id, f"Error: {exc}", str(exc)
 
-                for tc in choice.message.tool_calls:
+                for call in tool_calls:
                     logger.debug(
                         "Tool call %s: %s(%s)",
-                        tc.id,
-                        tc.function.name,
-                        tc.function.arguments[:500],
+                        call.call_id,
+                        call.name,
+                        call.arguments[:500],
                     )
                 results = await asyncio.gather(
-                    *[_exec_tool(tc) for tc in choice.message.tool_calls]
+                    *[_exec_tool(call) for call in tool_calls]
                 )
                 total_tool_calls += len(results)
-                for tc, (tool_call_id, result, error) in zip(
-                    choice.message.tool_calls, results
+                for call, (call_id, result, error) in zip(
+                    tool_calls, results
                 ):
-                    logger.debug("Tool result for %s: %s", tool_call_id, str(result)[:500])
+                    logger.debug(
+                        "Tool result for %s: %s",
+                        call_id,
+                        str(result)[:500],
+                    )
                     had_tool_error = had_tool_error or error is not None
                     if capture_full_trace:
                         try:
-                            arguments: Any = json.loads(tc.function.arguments)
+                            arguments: Any = json.loads(call.arguments)
                         except json.JSONDecodeError:
-                            arguments = tc.function.arguments
+                            arguments = call.arguments
                         tool_trace.append({
                             "iteration": iterations,
-                            "id": tool_call_id,
-                            "name": tc.function.name,
+                            "id": call_id,
+                            "name": call.name,
                             "arguments": arguments,
                             "result": str(result),
                             "error": error,
-                            "assistant_content": choice.message.content or "",
+                            "assistant_content": self._response_text(response),
                         })
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": str(result),
+                    response_input.append({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": str(result),
                     })
-            else:
-                # Final text response
-                response_text = choice.message.content or ""
-                self.stats.record(
-                    origin,
-                    prompt_tokens,
-                    completion_tokens,
-                    total_tokens,
-                    total_tool_calls,
-                )
-                self._emit_interaction(
-                    incoming=incoming,
-                    request_messages=request_messages,
-                    response_text=response_text,
-                    origin=origin,
-                    sites=sites,
-                    available_tools=available_tools,
-                    tool_calls=tool_trace,
-                    tool_calls_made=total_tool_calls,
+                continue
+
+            response_text = self._response_text(response)
+            self.stats.record(
+                origin,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                total_tool_calls,
+            )
+            self._emit_interaction(
+                incoming=incoming,
+                request_messages=request_messages,
+                response_text=response_text,
+                origin=origin,
+                sites=sites,
+                available_tools=available_tools,
+                tool_calls=tool_trace,
+                tool_calls_made=total_tool_calls,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                iterations=iterations,
+                duration_ms=round((time.monotonic() - started_at) * 1000),
+                outcome=self._interaction_outcome(
+                    available_tools, total_tool_calls, had_tool_error
+                ),
+            )
+            return ChatCompletionResponse(
+                model=self._deployment,
+                choices=[
+                    Choice(
+                        message=ChoiceMessage(
+                            role="assistant",
+                            content=response_text,
+                        ),
+                        finish_reason="stop",
+                    )
+                ],
+                usage=Usage(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                     total_tokens=total_tokens,
-                    iterations=iterations,
-                    duration_ms=round((time.monotonic() - started_at) * 1000),
-                    outcome=self._interaction_outcome(
-                        available_tools, total_tool_calls, had_tool_error
-                    ),
-                )
-                return ChatCompletionResponse(
-                    model=self._deployment,
-                    choices=[
-                        Choice(
-                            message=ChoiceMessage(
-                                role="assistant",
-                                content=response_text,
-                            ),
-                            finish_reason=choice.finish_reason or "stop",
-                        )
-                    ],
-                    usage=Usage(
-                        prompt_tokens=prompt_tokens,
-                        completion_tokens=completion_tokens,
-                        total_tokens=total_tokens,
-                    ),
-                )
+                ),
+            )
 
-        # Max iterations reached — return whatever we have
         response_text = (
             "I reached the maximum number of tool-calling iterations. "
             "Please try again with a simpler request."
@@ -550,6 +654,11 @@ class LLMClient:
                     finish_reason="stop",
                 )
             ],
+            usage=Usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            ),
         )
 
     async def chat_stream_ollama(
@@ -557,12 +666,14 @@ class LLMClient:
     ) -> AsyncIterator[str]:
         sites = self._select_sites(incoming)
         messages = self._build_messages(incoming, sites)
+        response_input: list[Any] = copy.deepcopy(messages)
         capture_full_trace = bool(
             self._remote_logger and self._remote_logging_mode == "all"
         )
         request_messages = copy.deepcopy(messages) if capture_full_trace else []
-        tools = self._mcp.get_all_tools_openai(sites)
-        available_tools = [tool["function"]["name"] for tool in tools]
+        mcp_tools = self._mcp.get_all_tools_openai(sites)
+        tools = self._format_tools(mcp_tools)
+        available_tools = [tool["name"] for tool in tools]
         origin = self._detect_origin_site(incoming)
         tool_trace: list[dict[str, Any]] = []
         total_tool_calls = 0
@@ -574,114 +685,180 @@ class LLMClient:
         for iteration in range(self._max_iterations):
             iterations = iteration + 1
             kwargs: dict[str, Any] = {
-                **self._chat_kwargs,
+                **self._request_kwargs,
                 "model": self._deployment,
-                "messages": messages,
+                "input": response_input,
+                "store": False,
                 "stream": True,
-                "stream_options": {"include_usage": True},
             }
             if tools:
                 kwargs["tools"] = tools
 
-            tool_calls_acc: dict[int, dict[str, Any]] = {}
+            completed_response = None
             content_parts: list[str] = []
-            iteration_usage = None
+            try:
+                stream = await self._client.responses.create(**kwargs)
+                async for event in stream:
+                    if event.type in {
+                        "response.output_text.delta",
+                        "response.refusal.delta",
+                    }:
+                        content_parts.append(event.delta)
+                        yield self._ollama_stream_chunk(
+                            event.delta, done=False
+                        )
+                    elif event.type == "response.completed":
+                        completed_response = event.response
+                    elif event.type in {
+                        "error",
+                        "response.failed",
+                        "response.incomplete",
+                    }:
+                        raise RuntimeError(
+                            f"Azure OpenAI stream ended with {event.type}: "
+                            f"{event.model_dump(mode='json', exclude_none=True)}"
+                        )
+            except Exception:
+                logger.exception("Azure OpenAI stream failed")
+                response_text = (
+                    "I couldn't complete the request because the model "
+                    "response failed. Please try again."
+                )
+                self.stats.record(
+                    origin,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    total_tool_calls,
+                )
+                self._emit_interaction(
+                    incoming=incoming,
+                    request_messages=request_messages,
+                    response_text=response_text,
+                    origin=origin,
+                    sites=sites,
+                    available_tools=available_tools,
+                    tool_calls=tool_trace,
+                    tool_calls_made=total_tool_calls,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    iterations=iterations,
+                    duration_ms=round(
+                        (time.monotonic() - started_at) * 1000
+                    ),
+                    outcome="model_error",
+                )
+                yield self._ollama_stream_chunk(
+                    response_text, done=True
+                )
+                return
 
-            async for chunk in await self._client.chat.completions.create(**kwargs):
-                if chunk.usage:
-                    iteration_usage = chunk.usage
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
+            if completed_response is None:
+                logger.error(
+                    "Azure OpenAI stream ended without a completed response"
+                )
+                response_text = (
+                    "I couldn't complete the request because the model "
+                    "stream ended unexpectedly. Please try again."
+                )
+                self.stats.record(
+                    origin,
+                    prompt_tokens,
+                    completion_tokens,
+                    total_tokens,
+                    total_tool_calls,
+                )
+                self._emit_interaction(
+                    incoming=incoming,
+                    request_messages=request_messages,
+                    response_text=response_text,
+                    origin=origin,
+                    sites=sites,
+                    available_tools=available_tools,
+                    tool_calls=tool_trace,
+                    tool_calls_made=total_tool_calls,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    iterations=iterations,
+                    duration_ms=round(
+                        (time.monotonic() - started_at) * 1000
+                    ),
+                    outcome="model_error",
+                )
+                yield self._ollama_stream_chunk(
+                    response_text, done=True
+                )
+                return
+            self._ensure_completed_response(completed_response)
+            if completed_response.usage:
+                prompt_tokens += completed_response.usage.input_tokens
+                completion_tokens += completed_response.usage.output_tokens
+                total_tokens += completed_response.usage.total_tokens
 
-                if delta.content:
-                    content_parts.append(delta.content)
-                    yield json.dumps({
-                        "model": "ha-orchestrator",
-                        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
-                        "message": {"role": "assistant", "content": delta.content},
-                        "done": False,
-                    }) + "\n"
+            tool_calls = self._response_tool_calls(completed_response)
+            if tool_calls:
+                response_input.extend(
+                    self._response_output_items(completed_response)
+                )
 
-                if delta.tool_calls:
-                    for tc_delta in delta.tool_calls:
-                        idx = tc_delta.index
-                        if idx not in tool_calls_acc:
-                            tool_calls_acc[idx] = {
-                                "id": tc_delta.id or "",
-                                "type": "function",
-                                "function": {"name": "", "arguments": ""},
-                            }
-                        if tc_delta.id:
-                            tool_calls_acc[idx]["id"] = tc_delta.id
-                        if tc_delta.function:
-                            if tc_delta.function.name:
-                                tool_calls_acc[idx]["function"]["name"] += tc_delta.function.name
-                            if tc_delta.function.arguments:
-                                tool_calls_acc[idx]["function"]["arguments"] += tc_delta.function.arguments
-
-            if iteration_usage:
-                prompt_tokens += iteration_usage.prompt_tokens
-                completion_tokens += iteration_usage.completion_tokens
-                total_tokens += iteration_usage.total_tokens
-
-            if tool_calls_acc:
-                sorted_tcs = [tool_calls_acc[i] for i in sorted(tool_calls_acc)]
-                assistant_msg: dict[str, Any] = {
-                    "role": "assistant",
-                    "tool_calls": sorted_tcs,
-                }
-                if content_parts:
-                    assistant_msg["content"] = "".join(content_parts)
-                messages.append(assistant_msg)
-
-                # Execute tool calls in parallel
-                async def _exec_tool_s(tc):
+                async def _exec_tool(call: Any):
                     try:
-                        args = json.loads(tc["function"]["arguments"])
-                        result = await self._mcp.call_tool(tc["function"]["name"], args)
-                        return tc["id"], result, None
-                    except Exception as e:
-                        logger.exception("Tool call %s failed", tc["function"]["name"])
-                        return tc["id"], f"Error: {e}", str(e)
+                        args = json.loads(call.arguments)
+                        result = await self._mcp.call_tool(call.name, args)
+                        return call.call_id, result, None
+                    except Exception as exc:
+                        logger.exception("Tool call %s failed", call.name)
+                        return call.call_id, f"Error: {exc}", str(exc)
 
-                for tc in sorted_tcs:
+                for call in tool_calls:
                     logger.debug(
                         "Tool call %s: %s(%s)",
-                        tc["id"],
-                        tc["function"]["name"],
-                        tc["function"]["arguments"][:500],
+                        call.call_id,
+                        call.name,
+                        call.arguments[:500],
                     )
                 results = await asyncio.gather(
-                    *[_exec_tool_s(tc) for tc in sorted_tcs]
+                    *[_exec_tool(call) for call in tool_calls]
                 )
                 total_tool_calls += len(results)
-                for tc, (tool_call_id, result, error) in zip(sorted_tcs, results):
-                    logger.debug("Tool result for %s: %s", tool_call_id, str(result)[:500])
+                for call, (call_id, result, error) in zip(
+                    tool_calls, results
+                ):
+                    logger.debug(
+                        "Tool result for %s: %s",
+                        call_id,
+                        str(result)[:500],
+                    )
                     had_tool_error = had_tool_error or error is not None
                     if capture_full_trace:
                         try:
-                            arguments = json.loads(tc["function"]["arguments"])
+                            arguments: Any = json.loads(call.arguments)
                         except json.JSONDecodeError:
-                            arguments = tc["function"]["arguments"]
+                            arguments = call.arguments
                         tool_trace.append({
                             "iteration": iterations,
-                            "id": tool_call_id,
-                            "name": tc["function"]["name"],
+                            "id": call_id,
+                            "name": call.name,
                             "arguments": arguments,
                             "result": str(result),
                             "error": error,
-                            "assistant_content": "".join(content_parts),
+                            "assistant_content": self._response_text(
+                                completed_response
+                            ),
                         })
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tool_call_id,
-                        "content": str(result),
+                    response_input.append({
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": str(result),
                     })
                 continue
 
-            # Done — send final chunk
-            response_text = "".join(content_parts)
+            response_text = (
+                self._response_text(completed_response)
+                or "".join(content_parts)
+            )
             self.stats.record(
                 origin,
                 prompt_tokens,
@@ -707,16 +884,12 @@ class LLMClient:
                     available_tools, total_tool_calls, had_tool_error
                 ),
             )
-            yield json.dumps({
-                "model": "ha-orchestrator",
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
-                "message": {"role": "assistant", "content": ""},
-                "done": True,
-            }) + "\n"
+            yield self._ollama_stream_chunk("", done=True)
             return
 
-        # Max iterations
-        response_text = "I reached the maximum number of tool-calling iterations."
+        response_text = (
+            "I reached the maximum number of tool-calling iterations."
+        )
         self.stats.record(
             origin,
             prompt_tokens,
@@ -740,9 +913,4 @@ class LLMClient:
             duration_ms=round((time.monotonic() - started_at) * 1000),
             outcome="max_iterations",
         )
-        yield json.dumps({
-            "model": "ha-orchestrator",
-            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S.000000Z", time.gmtime()),
-            "message": {"role": "assistant", "content": response_text},
-            "done": True,
-        }) + "\n"
+        yield self._ollama_stream_chunk(response_text, done=True)

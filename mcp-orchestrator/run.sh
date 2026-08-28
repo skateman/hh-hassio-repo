@@ -3,7 +3,6 @@
 export AZURE_OPENAI_ENDPOINT="$(bashio::config 'azure_openai_endpoint')"
 export AZURE_OPENAI_API_KEY="$(bashio::config 'azure_openai_api_key')"
 export AZURE_OPENAI_DEPLOYMENT="$(bashio::config 'azure_openai_deployment')"
-export AZURE_OPENAI_API_VERSION="$(bashio::config 'azure_openai_api_version')"
 export AZURE_OPENAI_EXTRA="$(bashio::config 'azure_openai_extra')"
 export LOCAL_SITE_NAME="$(bashio::config 'local_site_name')"
 export LOCAL_SITE_KEYWORDS="$(bashio::config 'local_site_keywords')"

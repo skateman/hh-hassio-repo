@@ -94,6 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     llm_client = LLMClient(mcp_manager, remote_logger=remote_logger)
     yield
+    await llm_client.close()
     if remote_logger:
         await remote_logger.close()
     await mcp_manager.close()

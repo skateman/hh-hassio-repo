@@ -1,5 +1,5 @@
 name: Azure OpenAI MCP Orchestrator
-version: 0.5.0
+version: 0.6.0
 slug: mcp-orchestrator
 description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
 arch:
@@ -10,8 +10,7 @@ options:
   azure_openai_endpoint: ""
   azure_openai_api_key: ""
   azure_openai_deployment: ""
-  azure_openai_api_version: "2024-10-21"
-  azure_openai_extra: ""
+  azure_openai_extra: '{"reasoning": {"effort": "low"}}'
   local_site_name: "local"
   local_site_keywords: ""
   remote_sites: []
@@ -30,7 +29,6 @@ schema:
   azure_openai_endpoint: url
   azure_openai_api_key: password
   azure_openai_deployment: str
-  azure_openai_api_version: str
   azure_openai_extra: "str?"
   local_site_name: str
   local_site_keywords: "str?"
