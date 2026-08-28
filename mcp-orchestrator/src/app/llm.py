@@ -37,6 +37,49 @@ _LOCAL_SITE_RESPONSE_RULE = (
     "eredményének összehasonlításakor nevezd meg, mindig a tool prefix szerinti "
     "magyar névvel."
 )
+_FOLLOWUP_START_WORDS = {"es", "akkor", "then"}
+_SHORT_FOLLOWUP_QUESTION_WORDS = {"miert", "why"}
+_FOLLOWUP_START_PHRASES = (
+    ("and", "then"),
+    ("try", "again"),
+    ("please", "try", "again"),
+    ("do", "it"),
+    ("what", "happened"),
+    ("what", "was"),
+    ("probald", "ujra"),
+    ("probald", "megint"),
+    ("csinald", "meg"),
+    ("hajtsd", "vegre"),
+    ("most", "mar"),
+)
+_FOLLOWUP_WORDS = {
+    "azt",
+    "ezt",
+    "ugyanazt",
+    "elozo",
+    "amit",
+    "arra",
+    "ott",
+    "again",
+    "previous",
+    "ujra",
+    "megint",
+}
+_FOLLOWUP_ACTION_WORDS = {
+    "check",
+    "do",
+    "execute",
+    "fix",
+    "perform",
+    "repeat",
+    "retry",
+    "run",
+    "switch",
+    "try",
+    "turn",
+}
+_FOLLOWUP_PRONOUNS = {"it", "that"}
+_EXISTENTIAL_THERE_VERBS = {"is", "are", "was", "were"}
 
 
 def _normalize(text: str) -> str:
@@ -370,14 +413,81 @@ class LLMClient:
                 matched.append(site)
         return matched
 
+    @staticmethod
+    def _is_referential_followup(text: str) -> bool:
+        normalized = " ".join(
+            re.findall(r"[a-z0-9]+", _normalize(text))
+        )
+        words = normalized.split()
+        if not normalized or len(words) > 15:
+            return False
+        if words[0] in _FOLLOWUP_START_WORDS:
+            return True
+        if (
+            words[0] in _SHORT_FOLLOWUP_QUESTION_WORDS
+            and len(words) <= 4
+        ):
+            return True
+        if any(word in _FOLLOWUP_WORDS for word in words):
+            return True
+        if (
+            any(word in _FOLLOWUP_PRONOUNS for word in words)
+            and any(word in _FOLLOWUP_ACTION_WORDS for word in words)
+        ):
+            return True
+        if "there" in words and any(
+            word in _FOLLOWUP_ACTION_WORDS for word in words
+        ):
+            existential_there = any(
+                words[index] == "there"
+                and index + 1 < len(words)
+                and words[index + 1] in _EXISTENTIAL_THERE_VERBS
+                for index in range(len(words))
+            )
+            if not existential_there:
+                return True
+        return any(
+            tuple(words[:len(phrase)]) == phrase
+            for phrase in _FOLLOWUP_START_PHRASES
+        )
+
+    def _followup_sites(
+        self,
+        incoming: list[ChatMessage],
+        site_keywords: dict[str, list[str]],
+    ) -> tuple[bool, list[str] | None]:
+        skipped_current_user = False
+        for message in reversed(incoming):
+            if message.role != "user" or not message.content:
+                continue
+            if not skipped_current_user:
+                skipped_current_user = True
+                continue
+            text = _normalize(message.content)
+            if self._global_keywords and any(
+                keyword in text for keyword in self._global_keywords
+            ):
+                return True, None
+            matched = self._match_site_keywords(
+                text,
+                site_keywords,
+            )
+            if matched:
+                return True, matched
+            if not self._is_referential_followup(text):
+                return False, None
+        return False, None
+
     def _select_sites(self, incoming: list[ChatMessage]) -> list[str] | None:
         """Determine which sites' tools to include. Returns None for all tools.
 
-        Two-level keyword detection:
+        Site selection order:
         1. Check the user message for site keywords — if found, use only those sites.
-        2. If no match, check the combined system prompt (L1 master + L2 incoming) for
+        2. For a referential follow-up, reuse the latest site explicitly named
+           by the user earlier in the conversation.
+        3. If no match, check the combined system prompt (L1 master + L2 incoming) for
            site keywords — if found, use those sites.
-        3. No match anywhere — send all tools.
+        4. No match anywhere — send all tools.
         """
         site_keywords = self._mcp.site_keywords
 
@@ -397,7 +507,20 @@ class LLMClient:
                 logger.debug("Site keyword matched in user message: %s", matched)
                 return matched
 
-        # Level 2: Check site-specific keywords in L2 system prompt only
+        # Level 2: Keep the most recently named site for referential follow-ups.
+        if self._is_referential_followup(user_text):
+            inherited, matched = self._followup_sites(
+                incoming,
+                site_keywords,
+            )
+            if inherited:
+                logger.debug(
+                    "Site routing inherited from conversation follow-up: %s",
+                    matched or "all sites",
+                )
+                return matched
+
+        # Level 3: Check site-specific keywords in L2 system prompt only
         # (incoming system messages, excluding the L1 master prompt from config)
         system_parts: list[str] = []
         for msg in incoming:
@@ -441,9 +564,13 @@ class LLMClient:
                     "GetEntityState. If absent, call the site's SearchEntities "
                     "tool with an English query that omits the site name, and "
                     "do not report it missing before that search returns no "
-                    "match. When the tool site equals the request's origin "
-                    "site, omit the site name from the response; mention sites "
-                    "only for cross-site or multi-site results."
+                    "match. With a unique exact entity name, send only the name "
+                    "and action-specific values. Preserve action data such as "
+                    "the cleaning area for HassVacuumCleanArea; if an exact "
+                    "name is duplicated, include only the area or domain needed "
+                    "to disambiguate it. When the tool site equals the request's "
+                    "origin site, omit the site name from the response; mention "
+                    "sites only for cross-site or multi-site results."
                 )
                 master = master.replace(
                     "{entities}",
@@ -523,13 +650,33 @@ class LLMClient:
                 )
 
                 async def _exec_tool(call: Any):
+                    prepared_arguments: Any = call.arguments
                     try:
                         args = json.loads(call.arguments)
-                        result = await self._mcp.call_tool(call.name, args)
-                        return call.call_id, result, None
+                        prepared_arguments = (
+                            self._mcp.prepare_tool_arguments(
+                                call.name,
+                                args,
+                            )
+                        )
+                        result = await self._mcp.call_tool(
+                            call.name,
+                            prepared_arguments,
+                        )
+                        return (
+                            call.call_id,
+                            result,
+                            None,
+                            prepared_arguments,
+                        )
                     except Exception as exc:
                         logger.exception("Tool call %s failed", call.name)
-                        return call.call_id, f"Error: {exc}", str(exc)
+                        return (
+                            call.call_id,
+                            f"Error: {exc}",
+                            str(exc),
+                            prepared_arguments,
+                        )
 
                 for call in tool_calls:
                     logger.debug(
@@ -542,7 +689,12 @@ class LLMClient:
                     *[_exec_tool(call) for call in tool_calls]
                 )
                 total_tool_calls += len(results)
-                for call, (call_id, result, error) in zip(
+                for call, (
+                    call_id,
+                    result,
+                    error,
+                    prepared_arguments,
+                ) in zip(
                     tool_calls, results
                 ):
                     logger.debug(
@@ -552,15 +704,11 @@ class LLMClient:
                     )
                     had_tool_error = had_tool_error or error is not None
                     if capture_full_trace:
-                        try:
-                            arguments: Any = json.loads(call.arguments)
-                        except json.JSONDecodeError:
-                            arguments = call.arguments
                         tool_trace.append({
                             "iteration": iterations,
                             "id": call_id,
                             "name": call.name,
-                            "arguments": arguments,
+                            "arguments": prepared_arguments,
                             "result": str(result),
                             "error": error,
                             "assistant_content": self._response_text(response),
@@ -804,13 +952,33 @@ class LLMClient:
                 )
 
                 async def _exec_tool(call: Any):
+                    prepared_arguments: Any = call.arguments
                     try:
                         args = json.loads(call.arguments)
-                        result = await self._mcp.call_tool(call.name, args)
-                        return call.call_id, result, None
+                        prepared_arguments = (
+                            self._mcp.prepare_tool_arguments(
+                                call.name,
+                                args,
+                            )
+                        )
+                        result = await self._mcp.call_tool(
+                            call.name,
+                            prepared_arguments,
+                        )
+                        return (
+                            call.call_id,
+                            result,
+                            None,
+                            prepared_arguments,
+                        )
                     except Exception as exc:
                         logger.exception("Tool call %s failed", call.name)
-                        return call.call_id, f"Error: {exc}", str(exc)
+                        return (
+                            call.call_id,
+                            f"Error: {exc}",
+                            str(exc),
+                            prepared_arguments,
+                        )
 
                 for call in tool_calls:
                     logger.debug(
@@ -823,7 +991,12 @@ class LLMClient:
                     *[_exec_tool(call) for call in tool_calls]
                 )
                 total_tool_calls += len(results)
-                for call, (call_id, result, error) in zip(
+                for call, (
+                    call_id,
+                    result,
+                    error,
+                    prepared_arguments,
+                ) in zip(
                     tool_calls, results
                 ):
                     logger.debug(
@@ -833,15 +1006,11 @@ class LLMClient:
                     )
                     had_tool_error = had_tool_error or error is not None
                     if capture_full_trace:
-                        try:
-                            arguments: Any = json.loads(call.arguments)
-                        except json.JSONDecodeError:
-                            arguments = call.arguments
                         tool_trace.append({
                             "iteration": iterations,
                             "id": call_id,
                             "name": call.name,
-                            "arguments": arguments,
+                            "arguments": prepared_arguments,
                             "result": str(result),
                             "error": error,
                             "assistant_content": self._response_text(

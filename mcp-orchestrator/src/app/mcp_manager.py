@@ -31,6 +31,8 @@ SEPARATOR = "__"
 _LIVE_CONTEXT_TOOL = "GetLiveContext"
 _SEARCH_ENTITIES_TOOL = "SearchEntities"
 _GET_ENTITY_STATE_TOOL = "GetEntityState"
+_ASSIST_SELECTOR_FIELDS = {"area", "floor", "domain", "device_class"}
+_ASSIST_AREA_ACTION_TOOLS = {"HassVacuumCleanArea"}
 _WORD_RE = re.compile(r"[a-z0-9]+")
 _ENTITY_TOKEN_ALIASES: dict[str, tuple[str, ...]] = {
     "homerseklet": ("temperature",),
@@ -79,6 +81,10 @@ def _tool_input_schema(tool: Any) -> dict[str, Any]:
     return schema if schema is not None else tool.inputSchema
 
 
+def _base_tool_name(tool_name: str) -> str:
+    return tool_name.rsplit(SEPARATOR, 1)[-1]
+
+
 def _normalize(text: str) -> str:
     normalized = unicodedata.normalize("NFKD", text.lower())
     ascii_text = "".join(
@@ -119,9 +125,31 @@ class EntitySnapshot:
     state: str = ""
     area: str = ""
     details: str = ""
+    name_aliases: tuple[str, ...] = ()
+    area_aliases: tuple[str, ...] = ()
 
     def search_text(self) -> str:
-        return " ".join(part for part in (self.name, self.area) if part)
+        return " ".join((*self.names(), *self.areas()))
+
+    def names(self) -> tuple[str, ...]:
+        return self.name_aliases or (self.name,)
+
+    def areas(self) -> tuple[str, ...]:
+        if self.area_aliases:
+            return self.area_aliases
+        return (self.area,) if self.area else ()
+
+    def matches_name(self, normalized_name: str) -> bool:
+        return any(
+            _normalize(alias) == normalized_name
+            for alias in self.names()
+        )
+
+    def matches_area(self, normalized_area: str) -> bool:
+        return any(
+            _normalize(alias) == normalized_area
+            for alias in self.areas()
+        )
 
     def summary(self, *, include_state: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {
@@ -130,11 +158,19 @@ class EntitySnapshot:
         }
         if self.area:
             result["area"] = self.area
+        if len(self.names()) > 1:
+            result["aliases"] = list(self.names()[1:])
+        if len(self.areas()) > 1:
+            result["area_aliases"] = list(self.areas()[1:])
         if include_state:
             result["state"] = self.state
             if self.details:
                 result["details"] = self.details
         return result
+
+
+class MCPToolError(RuntimeError):
+    """An MCP server returned an explicit tool execution error."""
 
 
 @dataclass
@@ -147,6 +183,7 @@ class MCPServer:
     tools: list[dict[str, Any]] = field(default_factory=list)
     entities: list[EntitySnapshot] = field(default_factory=list)
     has_live_context: bool = False
+    live_context_tool: str = ""
     entity_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _connected: bool = False
 
@@ -254,14 +291,22 @@ class MCPManager:
                             }
                             for tool in result.tools
                         ]
-                        server.has_live_context = any(
-                            tool["name"] == _LIVE_CONTEXT_TOOL
-                            for tool in discovered_tools
+                        server.live_context_tool = next(
+                            (
+                                tool["name"]
+                                for tool in discovered_tools
+                                if _base_tool_name(tool["name"])
+                                == _LIVE_CONTEXT_TOOL
+                            ),
+                            "",
+                        )
+                        server.has_live_context = bool(
+                            server.live_context_tool
                         )
                         server.tools = [
                             tool
                             for tool in discovered_tools
-                            if tool["name"] != _LIVE_CONTEXT_TOOL
+                            if tool["name"] != server.live_context_tool
                         ]
                         if server.has_live_context:
                             server.tools.extend(self._entity_tools())
@@ -273,7 +318,8 @@ class MCPManager:
                         if server.has_live_context:
                             try:
                                 server.entities = await self._fetch_entities(
-                                    session
+                                    session,
+                                    server.live_context_tool,
                                 )
                             except Exception:
                                 logger.warning(
@@ -302,6 +348,7 @@ class MCPManager:
                 server.tools = []
                 server.entities = []
                 server.has_live_context = False
+                server.live_context_tool = ""
                 self._servers.pop(server.name, None)
 
                 delay = self._RETRY_DELAYS[min(attempt, len(self._RETRY_DELAYS) - 1)]
@@ -470,6 +517,15 @@ class MCPManager:
         return value
 
     @classmethod
+    def _split_scalar(cls, value: str) -> tuple[str, ...]:
+        cleaned = cls._clean_scalar(value)
+        return tuple(
+            part
+            for item in cleaned.split(",")
+            if (part := cls._clean_scalar(item))
+        )
+
+    @classmethod
     def _parse_entities(cls, text: str) -> list[EntitySnapshot]:
         blocks: list[list[str]] = []
         current: list[str] = []
@@ -484,37 +540,58 @@ class MCPManager:
             blocks.append(current)
 
         entities: list[EntitySnapshot] = []
-        seen: set[tuple[str, str, str]] = set()
+        seen: set[tuple[tuple[str, ...], str, tuple[str, ...]]] = set()
         for block in blocks:
-            name = cls._clean_scalar(block[0].split(":", 1)[1])
-            domain = state = area = ""
+            name_parts = [block[0].split(":", 1)[1].strip()]
+            area_parts: list[str] = []
+            domain = state = ""
+            active_parts: list[str] | None = name_parts
             for line in block[1:]:
                 if line.startswith("  domain:"):
+                    active_parts = None
                     domain = cls._clean_scalar(line.split(":", 1)[1])
                 elif line.startswith("  state:"):
+                    active_parts = None
                     state = cls._clean_scalar(line.split(":", 1)[1])
                 elif line.startswith("  areas:"):
-                    area = cls._clean_scalar(line.split(":", 1)[1])
+                    area_parts = [line.split(":", 1)[1].strip()]
+                    active_parts = area_parts
+                elif line.startswith("    ") and active_parts is not None:
+                    active_parts.append(line.strip())
+                elif line.startswith("  "):
+                    active_parts = None
 
-            if not name or not domain:
+            names = cls._split_scalar(" ".join(name_parts))
+            areas = cls._split_scalar(" ".join(area_parts))
+            if not names or not domain:
                 continue
-            key = (name, domain, area)
+            key = (names, domain, areas)
             if key in seen:
                 continue
             seen.add(key)
             entities.append(EntitySnapshot(
-                name=name,
+                name=names[0],
                 domain=domain,
                 state=state,
-                area=area,
+                area=areas[0] if areas else "",
                 details="\n".join(block),
+                name_aliases=names,
+                area_aliases=areas,
             ))
         return entities
 
     async def _fetch_entities(
-        self, session: ClientSession
+        self,
+        session: ClientSession,
+        tool_name: str = _LIVE_CONTEXT_TOOL,
     ) -> list[EntitySnapshot]:
-        result = await session.call_tool(_LIVE_CONTEXT_TOOL, {})
+        result = await session.call_tool(tool_name, {})
+        raw_text = "\n".join(
+            item.text for item in result.content if hasattr(item, "text")
+        )
+        error = self._tool_result_error(result, raw_text)
+        if error:
+            raise MCPToolError(error)
         return self._parse_entities(self._result_text(result))
 
     async def _refresh_entities(
@@ -525,27 +602,34 @@ class MCPManager:
                 f"Live entity context is unavailable for site '{server.name}'"
             )
         async with server.entity_refresh_lock:
-            entities = await self._fetch_entities(server.session)
+            entities = await self._fetch_entities(
+                server.session,
+                server.live_context_tool or _LIVE_CONTEXT_TOOL,
+            )
             server.entities = entities
             return entities
 
     @staticmethod
-    def _entity_score(entity: EntitySnapshot, query: str) -> int:
+    def _entity_name_score(
+        name: str,
+        areas: tuple[str, ...],
+        query: str,
+    ) -> int:
         normalized_query = _normalize(query)
-        normalized_name = _normalize(entity.name)
-        normalized_area = _normalize(entity.area)
+        normalized_name = _normalize(name)
+        normalized_area = _normalize(" ".join(areas))
         if not normalized_query or not normalized_name:
             return 0
         if normalized_query == normalized_name:
             return 100
-        name_tokens = _tokens(entity.name)
+        name_tokens = _tokens(name)
         if normalized_query in normalized_name or (
             normalized_name in normalized_query and len(name_tokens) > 1
         ):
             return 95
 
         query_tokens = _tokens(query)
-        area_tokens = _tokens(entity.area)
+        area_tokens = _tokens(" ".join(areas))
         matched_name = sum(
             any(_token_matches(query_token, name_token)
                 for query_token in query_tokens)
@@ -578,6 +662,13 @@ class MCPManager:
         return max(combined_score, area_score, sequence_score)
 
     @classmethod
+    def _entity_score(cls, entity: EntitySnapshot, query: str) -> int:
+        return max(
+            cls._entity_name_score(name, entity.areas(), query)
+            for name in entity.names()
+        )
+
+    @classmethod
     def _search_entity_records(
         cls,
         entities: list[EntitySnapshot],
@@ -598,13 +689,13 @@ class MCPManager:
             if normalized_domain:
                 filter_score = 35
             if normalized_area:
-                entity_area = _normalize(entity.area)
-                area_mismatch = (
-                    normalized_area not in entity_area
+                area_mismatch = all(
+                    normalized_area not in (entity_area := _normalize(alias))
                     and entity_area not in normalized_area
                     and difflib.SequenceMatcher(
                         None, normalized_area, entity_area
                     ).ratio() < 0.72
+                    for alias in entity.areas()
                 )
                 if not area_mismatch:
                     filter_score = max(filter_score, 70)
@@ -736,14 +827,14 @@ class MCPManager:
         all_matches = [
             entity
             for entity in entities
-            if _normalize(entity.name) == normalized_name
+            if entity.matches_name(normalized_name)
             and (
                 not normalized_domain
                 or _normalize(entity.domain) == normalized_domain
             )
             and (
                 not normalized_area
-                or _normalize(entity.area) == normalized_area
+                or entity.matches_area(normalized_area)
             )
         ]
         matches = all_matches[:10]
@@ -793,10 +884,168 @@ class MCPManager:
                 })
         return tools
 
-    async def call_tool(self, namespaced_name: str, arguments: dict[str, Any]) -> Any:
-        """Parse site prefix and route call to the correct MCP server."""
+    @classmethod
+    def _clean_argument_value(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, list):
+            return [
+                cleaned
+                for item in value
+                if not cls._is_empty_argument(
+                    cleaned := cls._clean_argument_value(item)
+                )
+            ]
+        if isinstance(value, dict):
+            return {
+                key: cleaned
+                for key, item in value.items()
+                if not cls._is_empty_argument(
+                    cleaned := cls._clean_argument_value(item)
+                )
+            }
+        return value
+
+    @staticmethod
+    def _is_empty_argument(value: Any) -> bool:
+        return (
+            value is None
+            or value == ""
+            or isinstance(value, (list, dict))
+            and not value
+        )
+
+    @staticmethod
+    def _domain_values(value: Any) -> set[str]:
+        if isinstance(value, str):
+            return {_normalize(value)}
+        if isinstance(value, list):
+            return {
+                _normalize(item)
+                for item in value
+                if isinstance(item, str) and item.strip()
+            }
+        return set()
+
+    def _sanitize_assist_arguments(
+        self,
+        server: MCPServer,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        name = arguments.get("name")
+        if name is None:
+            return arguments
+        if not isinstance(name, str):
+            raise ValueError(f"{tool_name}.name must be a string")
+
+        normalized_name = _normalize(name)
+        matches = [
+            entity
+            for entity in server.entities
+            if entity.matches_name(normalized_name)
+        ]
+        if not matches:
+            raise ValueError(
+                f"Entity '{name}' is not an exact exposed entity at site "
+                f"'{server.name}'; use SearchEntities first"
+            )
+
+        preserve_area = tool_name in _ASSIST_AREA_ACTION_TOOLS
+        selected = matches
+        requested_area = arguments.get("area")
+        requested_domains = self._domain_values(arguments.get("domain"))
+        domain_required = False
+        area_required = False
+        if len(matches) > 1:
+            if requested_domains:
+                filtered = [
+                    entity
+                    for entity in selected
+                    if _normalize(entity.domain) in requested_domains
+                ]
+                domain_required = len(filtered) < len(selected)
+                selected = filtered
+
+            if (
+                len(selected) > 1
+                and not preserve_area
+                and isinstance(requested_area, str)
+                and requested_area
+            ):
+                normalized_area = _normalize(requested_area)
+                filtered = [
+                    entity
+                    for entity in selected
+                    if entity.matches_area(normalized_area)
+                ]
+                area_required = len(filtered) < len(selected)
+                selected = filtered
+
+        area_action_can_disambiguate = (
+            preserve_area
+            and isinstance(requested_area, str)
+            and bool(requested_area)
+            and bool(selected)
+        )
+        if (
+            len(matches) > 1
+            and len(selected) != 1
+            and not area_action_can_disambiguate
+        ):
+            choices = ", ".join(
+                f"{entity.name} [{entity.domain}]"
+                + (f" in {entity.area}" if entity.area else "")
+                for entity in matches
+            )
+            raise ValueError(
+                f"Entity name '{name}' is ambiguous at site "
+                f"'{server.name}': {choices}"
+            )
+        if not selected:
+            raise ValueError(
+                f"The supplied selectors do not match exposed entity "
+                f"'{name}' at site '{server.name}'"
+            )
+        entity = selected[0]
+        arguments["name"] = next(
+            alias
+            for alias in entity.names()
+            if _normalize(alias) == normalized_name
+        )
+
+        for field in _ASSIST_SELECTOR_FIELDS:
+            if field == "area" and preserve_area:
+                continue
+            arguments.pop(field, None)
+
+        if len(matches) > 1 and not preserve_area:
+            if domain_required:
+                arguments["domain"] = [entity.domain]
+            if area_required and entity.area and not preserve_area:
+                if isinstance(requested_area, str) and entity.matches_area(
+                    _normalize(requested_area)
+                ):
+                    arguments["area"] = next(
+                        alias
+                        for alias in entity.areas()
+                        if _normalize(alias) == _normalize(requested_area)
+                    )
+                else:
+                    arguments["area"] = entity.area
+
+        return arguments
+
+    def prepare_tool_arguments(
+        self,
+        namespaced_name: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Validate and normalize a model-generated tool call."""
         if SEPARATOR not in namespaced_name:
             raise ValueError(f"Tool name must be namespaced: {namespaced_name}")
+        if not isinstance(arguments, dict):
+            raise ValueError("Tool arguments must be a JSON object")
 
         site, tool_name = namespaced_name.split(SEPARATOR, 1)
         server = self._servers.get(site)
@@ -808,6 +1057,47 @@ class MCPManager:
             raise ValueError(
                 f"Tool '{namespaced_name}' is not available to the model"
             )
+
+        cleaned = self._clean_argument_value(arguments)
+        assist_tool_name = _base_tool_name(tool_name)
+        if assist_tool_name.startswith("Hass"):
+            cleaned = self._sanitize_assist_arguments(
+                server,
+                assist_tool_name,
+                cleaned,
+            )
+        return cleaned
+
+    @staticmethod
+    def _tool_result_error(result: Any, text: str) -> str | None:
+        if bool(
+            getattr(result, "is_error", False)
+            or getattr(result, "isError", False)
+        ):
+            return text or "MCP tool execution failed"
+
+        stripped = text.strip()
+        if stripped.lower().startswith(("error calling tool:", "error:")):
+            return stripped
+        try:
+            payload = json.loads(stripped)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if isinstance(payload, dict) and payload.get("success") is False:
+            return str(payload.get("error") or payload)
+        return None
+
+    async def call_tool(self, namespaced_name: str, arguments: dict[str, Any]) -> Any:
+        """Parse site prefix and route call to the correct MCP server."""
+        if SEPARATOR not in namespaced_name:
+            raise ValueError(f"Tool name must be namespaced: {namespaced_name}")
+        site, tool_name = namespaced_name.split(SEPARATOR, 1)
+        server = self._servers.get(site)
+        arguments = self.prepare_tool_arguments(
+            namespaced_name,
+            arguments,
+        )
+        assert server is not None and server.session is not None
         if tool_name == _LIVE_CONTEXT_TOOL:
             return await self._targeted_context_response(server, arguments)
         if tool_name == _SEARCH_ENTITIES_TOOL:
@@ -824,7 +1114,11 @@ class MCPManager:
                 parts.append(item.text)
             else:
                 parts.append(str(item))
-        return "\n".join(parts)
+        text = "\n".join(parts)
+        error = self._tool_result_error(result, text)
+        if error:
+            raise MCPToolError(error)
+        return text
 
     @property
     def connected_sites(self) -> list[str]:

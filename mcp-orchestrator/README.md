@@ -35,8 +35,9 @@ To reduce prompt size and latency, the orchestrator selectively sends only relev
 
 1. **Global keywords** — if the user message contains any global keyword (e.g., "everywhere", "all sites"), all tools are sent.
 2. **Site keywords** — if the user message contains a site-specific keyword (e.g., "brno", "cabin"), only that site's tools are sent.
-3. **Origin detection** — if no keywords match, the orchestrator detects the origin site from the Ollama integration's Instructions (e.g., "This request originates from Home.") and sends only that site's tools.
-4. **Fallback** — if nothing matches, all tools are sent.
+3. **Follow-up context** — short referential follow-ups such as “then try again” inherit the previous request's routing. Inheritance continues across a follow-up chain but never skips over a newer standalone request.
+4. **Origin detection** — if no keywords or follow-up context match, the orchestrator detects the origin site from the Ollama integration's Instructions (e.g., "This request originates from Home.") and sends only that site's tools.
+5. **Fallback** — if nothing matches, all tools are sent.
 
 ### Azure OpenAI
 
@@ -64,6 +65,16 @@ This list is deliberately non-exhaustive. When the correct entity is not presele
 
 Area names participate in matching but are omitted from inline candidates to prevent the model from prepending areas to entity names in control calls. If no candidate matches, `{entities}` tells the model to use `SearchEntities`. If `{entities}` is absent from the system prompt, preselection is disabled but both virtual tools remain available.
 
+### Tool-call Hardening
+
+Before calling Home Assistant, the orchestrator:
+
+- Removes empty optional arguments such as `""`, `null`, `[]`, and `{}`.
+- Validates exact `name` values against the exposed entity cache.
+- When a unique exact name is present, removes alternative target selectors (`area`, `floor`, `domain`, and `device_class`) while preserving action-specific values. Duplicate names retain only the area or domain needed to disambiguate them.
+- Keeps `area` for operations where it is action data, such as `HassVacuumCleanArea`.
+- Promotes MCP error responses to tool failures, so the model receives an explicit error and remote logs use the `tool_error` outcome.
+
 ### Example Configuration
 
 ```yaml
@@ -90,6 +101,7 @@ system_prompt: >-
   {entities}
   Use only the name part (before the brackets) in the "name" field of tool calls.
   If the exact entity is not listed, use that site's SearchEntities tool with an English query that omits the site name, then copy its exact name into the control tool.
+  With a unique exact entity name, send only name and action-specific values. Preserve action data such as a vacuum cleaning area; for duplicate names include only the area or domain needed to disambiguate.
   For current sensor or device state, use GetEntityState with an exact discovered name.
   Never invent entity names, and only report an entity as missing after SearchEntities returns no match.
   Omit the site name when responding about the request's origin site. Mention sites only for cross-site or multi-site results.
