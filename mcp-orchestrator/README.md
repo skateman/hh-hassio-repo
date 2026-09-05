@@ -9,6 +9,7 @@ The orchestrator acts as a central hub:
 - **Incoming**: Each HA site uses the built-in **Ollama** integration to send requests to the orchestrator's `/api/chat` endpoint.
 - **Outgoing**: The orchestrator connects to each site's MCP server, gathers available tools, namespaces them by site, and uses Azure OpenAI to orchestrate tool-calling across all sites.
 - **Targeted entity context**: The orchestrator parses `GetLiveContext` internally, injects only entities relevant to the current utterance, and exposes bounded search/state tools. The complete home snapshot is never sent to Azure OpenAI.
+- **Catalog recovery**: If a connected Home Assistant changes or namespaces an MCP tool while the orchestrator is running, a tool-not-found response triggers catalog re-discovery and one automatic retry.
 
 ## Configuration
 

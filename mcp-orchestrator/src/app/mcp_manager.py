@@ -184,6 +184,7 @@ class MCPServer:
     entities: list[EntitySnapshot] = field(default_factory=list)
     has_live_context: bool = False
     live_context_tool: str = ""
+    tool_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     entity_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _connected: bool = False
 
@@ -281,35 +282,7 @@ class MCPManager:
                         server._connected = True
                         attempt = 0  # reset on success
 
-                        # Discover tools
-                        result = await session.list_tools()
-                        discovered_tools = [
-                            {
-                                "name": tool.name,
-                                "description": tool.description or "",
-                                "inputSchema": _tool_input_schema(tool),
-                            }
-                            for tool in result.tools
-                        ]
-                        server.live_context_tool = next(
-                            (
-                                tool["name"]
-                                for tool in discovered_tools
-                                if _base_tool_name(tool["name"])
-                                == _LIVE_CONTEXT_TOOL
-                            ),
-                            "",
-                        )
-                        server.has_live_context = bool(
-                            server.live_context_tool
-                        )
-                        server.tools = [
-                            tool
-                            for tool in discovered_tools
-                            if tool["name"] != server.live_context_tool
-                        ]
-                        if server.has_live_context:
-                            server.tools.extend(self._entity_tools())
+                        await self._refresh_tool_catalog(server)
 
                         self._servers[server.name] = server
 
@@ -317,10 +290,7 @@ class MCPManager:
                         # and targeted virtual lookup tools.
                         if server.has_live_context:
                             try:
-                                server.entities = await self._fetch_entities(
-                                    session,
-                                    server.live_context_tool,
-                                )
+                                server.entities = await self._fetch_entities(server)
                             except Exception:
                                 logger.warning(
                                     "Failed to fetch entities for %s",
@@ -580,10 +550,127 @@ class MCPManager:
             ))
         return entities
 
+    async def _refresh_tool_catalog(self, server: MCPServer) -> None:
+        """Re-read an MCP server's tools and rebuild the model-facing catalog."""
+        if not server.session:
+            raise RuntimeError(
+                f"MCP server '{server.name}' is not connected"
+            )
+
+        async with server.tool_refresh_lock:
+            result = await server.session.list_tools()
+            discovered_tools = [
+                {
+                    "name": tool.name,
+                    "description": tool.description or "",
+                    "inputSchema": _tool_input_schema(tool),
+                }
+                for tool in result.tools
+            ]
+            previous_live_context_tool = server.live_context_tool
+            server.live_context_tool = next(
+                (
+                    tool["name"]
+                    for tool in discovered_tools
+                    if _base_tool_name(tool["name"])
+                    == _LIVE_CONTEXT_TOOL
+                ),
+                "",
+            )
+            server.has_live_context = bool(server.live_context_tool)
+            server.tools = [
+                tool
+                for tool in discovered_tools
+                if tool["name"] != server.live_context_tool
+            ]
+            if server.has_live_context:
+                server.tools.extend(self._entity_tools())
+
+            logger.info(
+                "Refreshed MCP tools for %s: %d tools, live context %r -> %r",
+                server.name,
+                len(server.tools),
+                previous_live_context_tool,
+                server.live_context_tool,
+            )
+
+    @staticmethod
+    def _is_tool_not_found_error(error: str) -> bool:
+        normalized = error.lower()
+        return (
+            "tool" in normalized
+            and (
+                "not found" in normalized
+                or "unknown tool" in normalized
+            )
+        )
+
+    @staticmethod
+    def _resolve_upstream_tool_name(
+        server: MCPServer,
+        requested_name: str,
+    ) -> str | None:
+        names = [
+            tool["name"]
+            for tool in server.tools
+            if _base_tool_name(tool["name"])
+            not in {
+                _LIVE_CONTEXT_TOOL,
+                _SEARCH_ENTITIES_TOOL,
+                _GET_ENTITY_STATE_TOOL,
+            }
+        ]
+        if requested_name in names:
+            return requested_name
+        requested_base = _base_tool_name(requested_name)
+        matches = [
+            name
+            for name in names
+            if _base_tool_name(name) == requested_base
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     async def _fetch_entities(
         self,
+        server: MCPServer,
+    ) -> list[EntitySnapshot]:
+        if not server.session or not server.live_context_tool:
+            raise RuntimeError(
+                f"Live entity context is unavailable for site '{server.name}'"
+            )
+
+        try:
+            return await self._fetch_entities_once(
+                server.session,
+                server.live_context_tool,
+            )
+        except MCPToolError as exc:
+            if not self._is_tool_not_found_error(str(exc)):
+                raise
+
+            previous_tool = server.live_context_tool
+            await self._refresh_tool_catalog(server)
+            if not server.live_context_tool:
+                raise RuntimeError(
+                    f"Live entity context is no longer available for site "
+                    f"'{server.name}'"
+                ) from exc
+            logger.warning(
+                "Retrying entity refresh for %s after MCP tool changed "
+                "from %r to %r",
+                server.name,
+                previous_tool,
+                server.live_context_tool,
+            )
+            return await self._fetch_entities_once(
+                server.session,
+                server.live_context_tool,
+            )
+
+    async def _fetch_entities_once(
+        self,
         session: ClientSession,
-        tool_name: str = _LIVE_CONTEXT_TOOL,
+        tool_name: str,
     ) -> list[EntitySnapshot]:
         result = await session.call_tool(tool_name, {})
         raw_text = "\n".join(
@@ -602,10 +689,7 @@ class MCPManager:
                 f"Live entity context is unavailable for site '{server.name}'"
             )
         async with server.entity_refresh_lock:
-            entities = await self._fetch_entities(
-                server.session,
-                server.live_context_tool or _LIVE_CONTEXT_TOOL,
-            )
+            entities = await self._fetch_entities(server)
             server.entities = entities
             return entities
 
@@ -1053,7 +1137,10 @@ class MCPManager:
             raise ValueError(f"MCP server '{site}' is not connected")
 
         available_tools = {tool["name"] for tool in server.tools}
-        if tool_name not in available_tools:
+        if (
+            tool_name not in available_tools
+            and not self._resolve_upstream_tool_name(server, tool_name)
+        ):
             raise ValueError(
                 f"Tool '{namespaced_name}' is not available to the model"
             )
@@ -1087,6 +1174,26 @@ class MCPManager:
             return str(payload.get("error") or payload)
         return None
 
+    async def _call_upstream_tool_once(
+        self,
+        server: MCPServer,
+        tool_name: str,
+        arguments: dict[str, Any],
+    ) -> str:
+        assert server.session is not None
+        result = await server.session.call_tool(tool_name, arguments)
+        parts = []
+        for item in result.content:
+            if hasattr(item, "text"):
+                parts.append(item.text)
+            else:
+                parts.append(str(item))
+        text = "\n".join(parts)
+        error = self._tool_result_error(result, text)
+        if error:
+            raise MCPToolError(error)
+        return text
+
     async def call_tool(self, namespaced_name: str, arguments: dict[str, Any]) -> Any:
         """Parse site prefix and route call to the correct MCP server."""
         if SEPARATOR not in namespaced_name:
@@ -1106,19 +1213,39 @@ class MCPManager:
         if tool_name == _GET_ENTITY_STATE_TOOL:
             return await self._state_response(server, arguments)
 
-        result = await server.session.call_tool(tool_name, arguments)
-        # Extract text content from the result
-        parts = []
-        for item in result.content:
-            if hasattr(item, "text"):
-                parts.append(item.text)
-            else:
-                parts.append(str(item))
-        text = "\n".join(parts)
-        error = self._tool_result_error(result, text)
-        if error:
-            raise MCPToolError(error)
-        return text
+        current_tool = (
+            self._resolve_upstream_tool_name(server, tool_name)
+            or tool_name
+        )
+        try:
+            return await self._call_upstream_tool_once(
+                server,
+                current_tool,
+                arguments,
+            )
+        except MCPToolError as exc:
+            if not self._is_tool_not_found_error(str(exc)):
+                raise
+
+            previous_tool = current_tool
+            await self._refresh_tool_catalog(server)
+            remapped_tool = self._resolve_upstream_tool_name(
+                server,
+                tool_name,
+            )
+            if not remapped_tool or remapped_tool == previous_tool:
+                raise
+            logger.warning(
+                "Retrying MCP call for %s after tool changed from %r to %r",
+                server.name,
+                previous_tool,
+                remapped_tool,
+            )
+            return await self._call_upstream_tool_once(
+                server,
+                remapped_tool,
+                arguments,
+            )
 
     @property
     def connected_sites(self) -> list[str]:
