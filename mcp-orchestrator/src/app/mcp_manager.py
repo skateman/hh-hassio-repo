@@ -9,9 +9,9 @@ import re
 import unicodedata
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Iterable
 
-from mcp import ClientSession
+from mcp import ClientSession, types as mcp_types
 try:
     from mcp.client.streamable_http import (
         create_mcp_http_client,
@@ -184,6 +184,7 @@ class MCPServer:
     entities: list[EntitySnapshot] = field(default_factory=list)
     has_live_context: bool = False
     live_context_tool: str = ""
+    upstream_tools: list[dict[str, Any]] = field(default_factory=list)
     tool_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     entity_refresh_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
     _connected: bool = False
@@ -316,6 +317,7 @@ class MCPManager:
                 server.session = None
                 server._connected = False
                 server.tools = []
+                server.upstream_tools = []
                 server.entities = []
                 server.has_live_context = False
                 server.live_context_tool = ""
@@ -558,16 +560,44 @@ class MCPManager:
             )
 
         async with server.tool_refresh_lock:
-            result = await server.session.list_tools()
-            discovered_tools = [
-                {
-                    "name": tool.name,
-                    "description": tool.description or "",
-                    "inputSchema": _tool_input_schema(tool),
-                }
-                for tool in result.tools
-            ]
+            discovered_tools: list[dict[str, Any]] = []
+            cursors: set[str] = set()
+            names: set[str] = set()
+            cursor: str | None = None
+            while True:
+                if cursor is None:
+                    result = await server.session.list_tools()
+                elif _MCP_V2:
+                    result = await server.session.list_tools(
+                        params=mcp_types.PaginatedRequestParams(cursor=cursor)
+                    )
+                else:
+                    result = await server.session.list_tools(cursor=cursor)
+                for tool in result.tools:
+                    if tool.name in names:
+                        raise RuntimeError(
+                            f"Duplicate MCP tool '{tool.name}' at site "
+                            f"'{server.name}'"
+                        )
+                    names.add(tool.name)
+                    discovered_tools.append({
+                        "name": tool.name,
+                        "description": tool.description or "",
+                        "inputSchema": _tool_input_schema(tool),
+                    })
+                cursor = getattr(
+                    result, "next_cursor" if _MCP_V2 else "nextCursor", None
+                )
+                if cursor is None:
+                    break
+                if not isinstance(cursor, str) or cursor in cursors:
+                    raise RuntimeError(
+                        f"Invalid or repeated MCP tools cursor at site "
+                        f"'{server.name}'"
+                    )
+                cursors.add(cursor)
             previous_live_context_tool = server.live_context_tool
+            server.upstream_tools = discovered_tools
             server.live_context_tool = next(
                 (
                     tool["name"]
@@ -581,7 +611,7 @@ class MCPManager:
             server.tools = [
                 tool
                 for tool in discovered_tools
-                if tool["name"] != server.live_context_tool
+                if _base_tool_name(tool["name"]) != _LIVE_CONTEXT_TOOL
             ]
             if server.has_live_context:
                 server.tools.extend(self._entity_tools())
@@ -823,6 +853,41 @@ class MCPManager:
             parts.append(f"{server.name.upper()}: {', '.join(entries)}")
         return "\n".join(parts)
 
+    def needs_entity_discovery(
+        self, query: str, sites: list[str] | None = None
+    ) -> bool:
+        """Identify uncertain entity requests without fetching or exposing states."""
+        return self.entity_discovery_needed(
+            query,
+            (
+                server.entities
+                for server in self._servers.values()
+                if server.has_live_context
+                and (sites is None or server.name in sites)
+            ),
+        )
+
+    @classmethod
+    def entity_discovery_needed(
+        cls, query: str, entity_groups: Iterable[list[EntitySnapshot]]
+    ) -> bool:
+        words = set(_tokens(query))
+        entity_words = {"device", "entity", "sensor", "switch", "climate", "vacuum"}
+        for aliases in _ENTITY_TOKEN_ALIASES.values():
+            entity_words.update(aliases)
+        entity_request = bool(words & entity_words)
+        unresolved = False
+        for entities in entity_groups:
+            matches = cls._search_entity_records(entities, query, limit=2)
+            if matches and matches[0][0] >= 60:
+                entity_request = True
+            # Scores are heuristic: a close runner-up is not a resolved target.
+            if not matches or matches[0][0] < 90 or (
+                len(matches) > 1 and matches[0][0] - matches[1][0] < 10
+            ):
+                unresolved = True
+        return entity_request and unresolved
+
     @classmethod
     def _search_arguments(
         cls, arguments: dict[str, Any]
@@ -950,13 +1015,18 @@ class MCPManager:
             ],
         }, ensure_ascii=False)
 
-    def get_all_tools_openai(self, sites: list[str] | None = None) -> list[dict[str, Any]]:
+    def get_all_tools_openai(
+        self,
+        sites: list[str] | None = None,
+        *,
+        upstream: bool = False,
+    ) -> list[dict[str, Any]]:
         """Return tools in OpenAI function-calling format, optionally filtered by site."""
         tools = []
         for server in self._servers.values():
             if sites is not None and server.name not in sites:
                 continue
-            for tool in server.tools:
+            for tool in server.upstream_tools if upstream else server.tools:
                 namespaced_name = f"{server.name}{SEPARATOR}{tool['name']}"
                 tools.append({
                     "type": "function",

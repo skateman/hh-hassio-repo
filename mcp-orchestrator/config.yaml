@@ -1,5 +1,5 @@
 name: Azure OpenAI MCP Orchestrator
-version: 0.6.2
+version: 0.7.0
 slug: mcp-orchestrator
 description: Bridges HA Assist to Azure OpenAI via MCP for multi-site control
 arch:
@@ -21,6 +21,7 @@ options:
   global_keywords: ""
   max_tool_iterations: 10
   entity_context_max_results: 5
+  skills_enabled: true
   remote_logging_connection_string: ""
   remote_logging_mode: "missed"
   api_key: ""
@@ -41,6 +42,7 @@ schema:
   global_keywords: "str?"
   max_tool_iterations: "int(1,50)"
   entity_context_max_results: "int(1,10)"
+  skills_enabled: "bool?"
   remote_logging_connection_string: "password?"
   remote_logging_mode: "list(missed|all)"
   api_key: "password?"
@@ -50,6 +52,10 @@ apparmor: true
 init: false
 boot: auto
 homeassistant_api: true
+map:
+  - type: addon_config
+    read_only: false
+    path: /config
 ports:
   11434/tcp: 11434
 ports_description:

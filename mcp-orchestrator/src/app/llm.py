@@ -22,6 +22,7 @@ from .models import (
     Usage,
 )
 from .remote_logging import RemoteLogger
+from .skills import SkillContext, SkillRegistry, SkillSession
 
 logger = logging.getLogger(__name__)
 
@@ -145,9 +146,19 @@ class StatsTracker:
 
 
 class LLMClient:
-    def __init__(self, mcp_manager: MCPManager, remote_logger: RemoteLogger | None = None) -> None:
+    def __init__(
+        self,
+        mcp_manager: MCPManager,
+        remote_logger: RemoteLogger | None = None,
+        skill_registry: SkillRegistry | None = None,
+    ) -> None:
         self._mcp = mcp_manager
         self._remote_logger = remote_logger
+        self._skill_registry = (
+            skill_registry
+            if skill_registry is not None
+            else SkillRegistry.from_environment()
+        )
         endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
         api_key = os.environ["AZURE_OPENAI_API_KEY"]
         self._client = AsyncOpenAI(
@@ -336,6 +347,7 @@ class LLMClient:
         iterations: int,
         duration_ms: int,
         outcome: str,
+        skills: SkillSession | None = None,
     ) -> None:
         """Log a completed interaction if remote logging is enabled."""
         if not self._remote_logger:
@@ -350,6 +362,7 @@ class LLMClient:
                 return
             self._remote_logger.log_event_bg({
                 "deployment": self._deployment,
+                "skills": skills.records() if skills else [],
                 "origin": origin,
                 "routed_sites": sites or self._mcp.connected_sites,
                 "user_message": user_msg,
@@ -364,6 +377,7 @@ class LLMClient:
             "schema_version": 2,
             "event_type": "interaction",
             "deployment": self._deployment,
+            "skills": skills.records() if skills else [],
             "outcome": outcome,
             "origin": origin,
             "routed_sites": sites or self._mcp.connected_sites,
@@ -538,7 +552,11 @@ class LLMClient:
         return None
 
     def _build_messages(
-        self, incoming: list[ChatMessage], sites: list[str] | None = None
+        self,
+        incoming: list[ChatMessage],
+        sites: list[str] | None = None,
+        *,
+        skills: SkillSession | None = None,
     ) -> list[dict[str, Any]]:
         messages: list[dict[str, Any]] = []
         origin = self._detect_origin_site(incoming)
@@ -583,6 +601,9 @@ class LLMClient:
                 )
             messages.append({"role": "system", "content": master})
 
+        if skills is not None:
+            skills.inject(messages, offset=len(messages))
+
         # Append incoming messages; additional system messages from
         # the Ollama integration are preserved after the master prompt
         for msg in incoming:
@@ -604,17 +625,67 @@ class LLMClient:
 
         return messages
 
+    def _start_skills(
+        self,
+        incoming: list[ChatMessage],
+        sites: list[str] | None,
+        tools: list[dict[str, Any]],
+    ) -> tuple[SkillContext, SkillSession]:
+        user_message = self._last_user_text(incoming)
+        session = SkillSession(self._skill_registry)
+        if not self._skill_registry.skills:
+            return SkillContext(user_message), session
+        multi_site = sites is not None and len(sites) > 1
+        if sites is None:
+            multi_site = any(
+                keyword in _normalize(user_message)
+                for keyword in self._global_keywords
+            )
+            if not multi_site and self._is_referential_followup(user_message):
+                inherited, previous_sites = self._followup_sites(
+                    incoming, self._mcp.site_keywords
+                )
+                multi_site = inherited and previous_sites is None
+        has_lookup = any(
+            tool["function"]["name"].rsplit("__", 1)[-1] == "SearchEntities"
+            for tool in tools
+        )
+        context = SkillContext.for_request(
+            user_message,
+            (message.content or "" for message in incoming if message.role == "system"),
+            has_previous_turn=sum(message.role == "user" for message in incoming) > 1,
+            multi_site_request=multi_site,
+            entity_unresolved=(
+                has_lookup and self._mcp.needs_entity_discovery(user_message, sites)
+            ),
+        )
+        session.activate(context)
+        return context, session
+
+    def _update_skills(
+        self,
+        session: SkillSession,
+        context: SkillContext,
+        response_input: list[dict[str, Any]],
+        iterations: int,
+    ) -> None:
+        if iterations < self._max_iterations and session.activate(
+            context, iteration=iterations + 1
+        ):
+            session.inject(response_input, offset=int(bool(self._system_prompt)))
+
     async def chat(
         self, incoming: list[ChatMessage]
     ) -> ChatCompletionResponse:
         sites = self._select_sites(incoming)
-        messages = self._build_messages(incoming, sites)
+        mcp_tools = self._mcp.get_all_tools_openai(sites)
+        skill_context, skills = self._start_skills(incoming, sites, mcp_tools)
+        messages = self._build_messages(incoming, sites, skills=skills)
         response_input: list[Any] = copy.deepcopy(messages)
         capture_full_trace = bool(
             self._remote_logger and self._remote_logging_mode == "all"
         )
         request_messages = copy.deepcopy(messages) if capture_full_trace else []
-        mcp_tools = self._mcp.get_all_tools_openai(sites)
         tools = self._format_tools(mcp_tools)
         available_tools = [tool["name"] for tool in tools]
         origin = self._detect_origin_site(incoming)
@@ -703,6 +774,9 @@ class LLMClient:
                         str(result)[:500],
                     )
                     had_tool_error = had_tool_error or error is not None
+                    skill_context = skill_context.after_tool(
+                        call.name, str(result), failed=error is not None
+                    )
                     if capture_full_trace:
                         tool_trace.append({
                             "iteration": iterations,
@@ -718,6 +792,7 @@ class LLMClient:
                         "call_id": call_id,
                         "output": str(result),
                     })
+                self._update_skills(skills, skill_context, response_input, iterations)
                 continue
 
             response_text = self._response_text(response)
@@ -745,6 +820,7 @@ class LLMClient:
                 outcome=self._interaction_outcome(
                     available_tools, total_tool_calls, had_tool_error
                 ),
+                skills=skills,
             )
             return ChatCompletionResponse(
                 model=self._deployment,
@@ -790,6 +866,7 @@ class LLMClient:
             iterations=iterations,
             duration_ms=round((time.monotonic() - started_at) * 1000),
             outcome="max_iterations",
+            skills=skills,
         )
         return ChatCompletionResponse(
             model=self._deployment,
@@ -813,13 +890,14 @@ class LLMClient:
         self, incoming: list[ChatMessage]
     ) -> AsyncIterator[str]:
         sites = self._select_sites(incoming)
-        messages = self._build_messages(incoming, sites)
+        mcp_tools = self._mcp.get_all_tools_openai(sites)
+        skill_context, skills = self._start_skills(incoming, sites, mcp_tools)
+        messages = self._build_messages(incoming, sites, skills=skills)
         response_input: list[Any] = copy.deepcopy(messages)
         capture_full_trace = bool(
             self._remote_logger and self._remote_logging_mode == "all"
         )
         request_messages = copy.deepcopy(messages) if capture_full_trace else []
-        mcp_tools = self._mcp.get_all_tools_openai(sites)
         tools = self._format_tools(mcp_tools)
         available_tools = [tool["name"] for tool in tools]
         origin = self._detect_origin_site(incoming)
@@ -896,6 +974,7 @@ class LLMClient:
                         (time.monotonic() - started_at) * 1000
                     ),
                     outcome="model_error",
+                    skills=skills,
                 )
                 yield self._ollama_stream_chunk(
                     response_text, done=True
@@ -934,6 +1013,7 @@ class LLMClient:
                         (time.monotonic() - started_at) * 1000
                     ),
                     outcome="model_error",
+                    skills=skills,
                 )
                 yield self._ollama_stream_chunk(
                     response_text, done=True
@@ -1005,6 +1085,9 @@ class LLMClient:
                         str(result)[:500],
                     )
                     had_tool_error = had_tool_error or error is not None
+                    skill_context = skill_context.after_tool(
+                        call.name, str(result), failed=error is not None
+                    )
                     if capture_full_trace:
                         tool_trace.append({
                             "iteration": iterations,
@@ -1022,6 +1105,7 @@ class LLMClient:
                         "call_id": call_id,
                         "output": str(result),
                     })
+                self._update_skills(skills, skill_context, response_input, iterations)
                 continue
 
             response_text = (
@@ -1052,6 +1136,7 @@ class LLMClient:
                 outcome=self._interaction_outcome(
                     available_tools, total_tool_calls, had_tool_error
                 ),
+                skills=skills,
             )
             yield self._ollama_stream_chunk("", done=True)
             return
@@ -1081,5 +1166,6 @@ class LLMClient:
             iterations=iterations,
             duration_ms=round((time.monotonic() - started_at) * 1000),
             outcome="max_iterations",
+            skills=skills,
         )
         yield self._ollama_stream_chunk(response_text, done=True)

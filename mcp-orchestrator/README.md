@@ -10,6 +10,7 @@ The orchestrator acts as a central hub:
 - **Outgoing**: The orchestrator connects to each site's MCP server, gathers available tools, namespaces them by site, and uses Azure OpenAI to orchestrate tool-calling across all sites.
 - **Targeted entity context**: The orchestrator parses `GetLiveContext` internally, injects only entities relevant to the current utterance, and exposes bounded search/state tools. The complete home snapshot is never sent to Azure OpenAI.
 - **Catalog recovery**: If a connected Home Assistant changes or namespaces an MCP tool while the orchestrator is running, a tool-not-found response triggers catalog re-discovery and one automatic retry.
+- **Runtime skills**: Small, versioned instruction files are selected deterministically for entity discovery, error recovery, and multi-site requests. Unselected skill bodies are not sent to the model.
 
 ## Configuration
 
@@ -26,6 +27,7 @@ The orchestrator acts as a central hub:
 | `global_keywords` | str | Comma-separated keywords that trigger sending all sites' tools |
 | `max_tool_iterations` | int | Max tool-calling loop iterations (1–50, default: 10) |
 | `entity_context_max_results` | int | Maximum relevant entities preselected per routed site (1–10, default: 5) |
+| `skills_enabled` | bool | Enable runtime skills (default: `true`). Set `false` to use only the existing system and channel prompts. |
 | `remote_logging_connection_string` | password | Azure Blob Storage connection string or container SAS URL for remote interaction logging. Leave empty to disable (default). |
 | `remote_logging_mode` | list | `missed` keeps the compact, missed-intent-only records from earlier releases (backward-compatible default); `all` logs every completed interaction and its full trace. |
 | `api_key` | password | Optional API key to protect the Ollama-compatible endpoint. When set, remote clients must send `Authorization: Bearer <key>`. Requests from the local HA (Supervisor network) are always allowed without a key. |
@@ -47,6 +49,32 @@ Requests remain stateless with `store=false`; encrypted reasoning state is
 carried only within the current request's tool loop.
 
 Values in `azure_openai_extra` are passed directly to the Azure OpenAI request.
+
+### Runtime Skills
+
+Skills add request-specific guidance for entity discovery, error recovery, and
+multi-site operations. They are enabled by default; set `skills_enabled: false`
+to disable them. Skills provide instructions only, without granting additional
+tool permissions or executing scripts.
+
+Edit or add `<name>/SKILL.md` files in this App's `/config/skills` directory,
+not Home Assistant Core's `/config`. Editor Apps with App-configuration access
+see them at:
+
+```text
+/addon_configs/<full-app-slug>/skills/<name>/SKILL.md
+```
+
+Files use Agent Skills Markdown with YAML frontmatter and activation metadata;
+use the [bundled skills](src/skills) as examples. **Restart the MCP Orchestrator
+App after edits.** Invalid definitions are reported at startup.
+
+Defaults are copied on the first enabled start. Skills persist across updates
+and are included in App backups; updates do not overwrite edits, restore
+deletions, or install revised defaults automatically.
+
+Skills are guidance, not guarantees: existing validation remains in force, and
+bounded searches cannot guarantee exhaustive device coverage.
 
 ### Entity Context
 
@@ -179,6 +207,7 @@ In `all` mode, each version 2 JSONL record contains:
 | `routed_sites` | Sites whose tools were sent |
 | `user_message` | The voice command text |
 | `request_messages` | Effective request messages, including system prompts and entity injection |
+| `skills` | Activated skill names, versions, first model iteration using them, and activation reasons; present in both logging modes |
 | `assistant_response` | Model's text reply |
 | `available_tools` | Names of tools sent to the model |
 | `tools_available` | Number of tools sent |
@@ -189,19 +218,6 @@ In `all` mode, each version 2 JSONL record contains:
 | `prompt_tokens` | Total input tokens across all iterations |
 | `completion_tokens` | Total output tokens across all iterations |
 | `total_tokens` | Combined token usage across all iterations |
-
-### Analyzing Logs
-
-Use the dependency-free `fetch-logs` tool in the prompt-refinement MCP server to retrieve and review interactions. It accepts the same container SAS URL through `REMOTE_LOGGING_CONNECTION_STRING`:
-
-```
-fetch-logs(date="2026-04-17")
-fetch-logs(date_from="2026-04-14", date_to="2026-04-17", outcome="no_tool_calls")
-fetch-logs(date="2026-04-17", limit=20, include_details=true)
-fetch-logs(date="2026-04-17", raw=true)
-```
-
-Version 1 missed-intent records already stored in the container remain readable and are reported as `outcome=no_tool_calls`.
 
 ## Diagnostics
 

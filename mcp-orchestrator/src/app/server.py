@@ -25,6 +25,7 @@ from .models import (
     OllamaModelList,
 )
 from .remote_logging import RemoteLogger
+from .skills import SkillRegistry
 
 logging.basicConfig(
     level=logging.INFO,
@@ -74,6 +75,7 @@ async def _stream_and_push(stream: AsyncIterator[str]) -> AsyncIterator[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     global llm_client, remote_logger
+    skill_registry = SkillRegistry.from_environment()
     await mcp_manager.connect_all()
     logger.info("Connected sites: %s", mcp_manager.connected_sites)
 
@@ -92,7 +94,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     else:
         logger.info("Remote logging disabled (no connection string)")
 
-    llm_client = LLMClient(mcp_manager, remote_logger=remote_logger)
+    llm_client = LLMClient(
+        mcp_manager, remote_logger=remote_logger, skill_registry=skill_registry
+    )
     yield
     await llm_client.close()
     if remote_logger:
