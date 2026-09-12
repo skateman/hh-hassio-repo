@@ -26,6 +26,9 @@ The orchestrator acts as a central hub:
 | `system_prompt` | str | Master system prompt prepended to every request |
 | `global_keywords` | str | Comma-separated keywords that trigger sending all sites' tools |
 | `max_tool_iterations` | int | Max tool-calling loop iterations (1–50, default: 10) |
+| `llm_timeout_seconds` | int | Maximum duration of one complete model attempt (default: 10 seconds) |
+| `request_timeout_seconds` | int | Overall model/tool processing budget, including retries (default: 30 seconds) |
+| `timeout_reply` | str | Configurable spoken fallback after a timeout; default: `Request timed out.` |
 | `entity_context_max_results` | int | Maximum relevant entities preselected per routed site (1–10, default: 5) |
 | `skills_enabled` | bool | Enable runtime skills (default: `true`). Set `false` to use only the existing system and channel prompts. |
 | `remote_logging_connection_string` | password | Azure Blob Storage connection string or container SAS URL for remote interaction logging. Leave empty to disable (default). |
@@ -42,6 +45,12 @@ To reduce prompt size and latency, the orchestrator selectively sends only relev
 4. **Origin detection** — if no keywords or follow-up context match, the orchestrator detects the origin site from the Ollama integration's Instructions (e.g., "This request originates from Home.") and sends only that site's tools.
 5. **Fallback** — if nothing matches, all tools are sent.
 
+For voice requests, broadcasts to the origin site are hidden and rejected to
+avoid interrupting the active satellite. Without an unambiguous origin
+declaration in the HA Instructions, all broadcasts are blocked. Local "say/tell"
+requests use the normal spoken reply instead; cross-site and Telegram broadcasts
+remain available. Calls outside the advertised request scope are also rejected.
+
 ### Azure OpenAI
 
 The orchestrator uses Azure's OpenAI-compatible `/openai/v1/` endpoint.
@@ -49,6 +58,22 @@ Requests remain stateless with `store=false`; encrypted reasoning state is
 carried only within the current request's tool loop.
 
 Values in `azure_openai_extra` are passed directly to the Azure OpenAI request.
+
+### Timeouts
+
+Model waits have a wall-clock limit, including the entire response stream.
+Completed streams are closed immediately rather than waiting for the server to
+disconnect. One timed-out model step may be retried per request, provided no
+answer text has been streamed and the overall budget remains. SDK-level automatic
+retries are disabled.
+
+The retry retains tool history instead of restarting the request. Identical
+previously dispatched actions reuse their recorded result or error; entity and
+time reads may run again. On timeout, `timeout_reply` is returned without another
+model call. Keep it neutral: already-dispatched device operations can still
+complete after cancellation. The overall budget excludes speech recognition and
+speech synthesis; the caller's Assist pipeline timeout should leave enough time
+to speak the fallback.
 
 ### Runtime Skills
 
@@ -202,7 +227,7 @@ In `all` mode, each version 2 JSONL record contains:
 | `schema_version` | Event schema version (`2` for complete interaction records) |
 | `event_type` | Event type (`interaction`) |
 | `deployment` | Azure OpenAI deployment name |
-| `outcome` | `tools_used`, `no_tool_calls`, `tool_error`, `no_tools_available`, `model_error`, or `max_iterations` |
+| `outcome` | `tools_used`, `no_tool_calls`, `tool_error`, `no_tools_available`, `model_error`, `timeout`, or `max_iterations` |
 | `origin` | Detected origin site (or `null`) |
 | `routed_sites` | Sites whose tools were sent |
 | `user_message` | The voice command text |
@@ -211,13 +236,18 @@ In `all` mode, each version 2 JSONL record contains:
 | `assistant_response` | Model's text reply |
 | `available_tools` | Names of tools sent to the model |
 | `tools_available` | Number of tools sent |
-| `tool_calls` | Ordered trace with iteration, name, arguments, result, and error |
-| `tool_calls_made` | Number of tool calls |
-| `iterations` | Number of Azure OpenAI calls made |
+| `tool_calls` | Ordered trace with iteration, name, arguments, result, error, status, duration, and whether a prior result was reused |
+| `tool_calls_made` | Number of model-requested tool calls handled, including reused results |
+| `iterations` | Model/tool-loop rounds; retries remain within the same round |
+| `model_attempts` | Per-attempt iteration, attempt number, timing, outcome, and whether usage was reported |
+| `timeout_stage` | `llm` or `tools` for a timeout; otherwise `null` |
 | `duration_ms` | End-to-end model/tool-loop duration |
 | `prompt_tokens` | Total input tokens across all iterations |
 | `completion_tokens` | Total output tokens across all iterations |
 | `total_tokens` | Combined token usage across all iterations |
+
+Token totals use reported model usage; timed-out attempts can incur additional
+usage that the provider did not return.
 
 ## Diagnostics
 
