@@ -324,6 +324,8 @@ class LLMClient:
                 "type": "function",
                 "name": tool["function"]["name"],
                 "description": tool["function"].get("description", ""),
+                # Responses otherwise makes optional HA parameters required.
+                "strict": False,
                 "parameters": tool["function"].get(
                     "parameters",
                     {"type": "object", "properties": {}},

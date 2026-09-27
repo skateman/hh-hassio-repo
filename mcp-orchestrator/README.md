@@ -58,6 +58,8 @@ Requests remain stateless with `store=false`; encrypted reasoning state is
 carried only within the current request's tool loop.
 
 Values in `azure_openai_extra` are passed directly to the Azure OpenAI request.
+Function tools use `strict: false` to preserve Home Assistant's optional
+arguments instead of requiring values for unused settings.
 
 ### Timeouts
 
