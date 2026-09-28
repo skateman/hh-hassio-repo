@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -20,15 +19,10 @@ import (
 	"github.com/skateman/hh-hassio-repo/acme-courier/internal/deploy"
 )
 
-type addonOptions struct {
-	Proxy string `json:"proxy"`
-}
-
 func main() {
 	var (
-		configPath  = flag.String("config", "/config/config.yml", "configuration file")
+		configPath  = flag.String("config", "/data/options.json", "Home Assistant add-on options")
 		storagePath = flag.String("storage", "/config/letsencrypt", "certificate state directory")
-		optionsPath = flag.String("options", "/data/options.json", "Home Assistant add-on options")
 		once        = flag.Bool("once", false, "run one reconciliation and exit")
 		debug       = flag.Bool("debug", false, "enable debug logging")
 	)
@@ -41,14 +35,8 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
 	slog.SetDefault(logger)
 
-	proxy, err := loadProxy(*optionsPath)
-	if err != nil {
-		logger.Error("failed to load add-on options", "error", err)
-		os.Exit(1)
-	}
-
 	deployer := deploy.New(deploy.ExecRunner{}, logger)
-	manager := certmanager.New(*storagePath, proxy, deployer, logger)
+	manager := certmanager.New(*storagePath, deployer, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -152,24 +140,4 @@ func startScheduler(spec string, job func()) (*cron.Cron, error) {
 	}
 	scheduler.Start()
 	return scheduler, nil
-}
-
-func loadProxy(path string) (string, error) {
-	if value := os.Getenv("ACME_COURIER_PROXY"); value != "" {
-		return value, nil
-	}
-
-	raw, err := os.ReadFile(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", nil
-	}
-	if err != nil {
-		return "", err
-	}
-
-	var options addonOptions
-	if err := json.Unmarshal(raw, &options); err != nil {
-		return "", fmt.Errorf("parse %s: %w", path, err)
-	}
-	return options.Proxy, nil
 }

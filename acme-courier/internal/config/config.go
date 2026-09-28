@@ -32,10 +32,10 @@ var (
 )
 
 type Config struct {
-	Draft        bool          `yaml:"draft,omitempty"`
-	ACME         ACMEConfig    `yaml:"acme"`
-	Profiles     []Profile     `yaml:"profiles"`
-	Certificates []Certificate `yaml:"certificates"`
+	Draft        bool            `yaml:"draft,omitempty"`
+	ACME         ACMEConfig      `yaml:"acme"`
+	Namecheap    NamecheapConfig `yaml:"namecheap"`
+	Certificates []Certificate   `yaml:"certificates"`
 }
 
 type ACMEConfig struct {
@@ -47,16 +47,11 @@ type ACMEConfig struct {
 	RenewJitter     Duration `yaml:"renew_jitter,omitempty"`
 }
 
-type Profile struct {
-	Name            string          `yaml:"name"`
-	Provider        string          `yaml:"provider"`
-	ProviderOptions ProviderOptions `yaml:"provider_options"`
-}
-
-type ProviderOptions struct {
+type NamecheapConfig struct {
 	AuthUsername       string   `yaml:"auth_username"`
 	AuthToken          string   `yaml:"auth_token"`
 	AuthClientIP       string   `yaml:"auth_client_ip,omitempty"`
+	Proxy              string   `yaml:"proxy,omitempty"`
 	TTL                int      `yaml:"ttl,omitempty"`
 	PropagationTimeout Duration `yaml:"propagation_timeout,omitempty"`
 	PollingInterval    Duration `yaml:"polling_interval,omitempty"`
@@ -65,7 +60,6 @@ type ProviderOptions struct {
 type Certificate struct {
 	Name       string         `yaml:"name,omitempty"`
 	Domains    []string       `yaml:"domains"`
-	Profile    string         `yaml:"profile"`
 	Deploy     []DeployTarget `yaml:"deploy,omitempty"`
 	ForceRenew bool           `yaml:"force_renew,omitempty"`
 	ReuseKey   bool           `yaml:"reuse_key,omitempty"`
@@ -139,17 +133,14 @@ func (c *Config) applyDefaults() {
 		c.ACME.RenewJitter.Duration = DefaultRenewJitter
 	}
 
-	for i := range c.Profiles {
-		options := &c.Profiles[i].ProviderOptions
-		if options.TTL == 0 {
-			options.TTL = DefaultTTL
-		}
-		if !options.PropagationTimeout.set {
-			options.PropagationTimeout.Duration = time.Hour
-		}
-		if !options.PollingInterval.set {
-			options.PollingInterval.Duration = 15 * time.Second
-		}
+	if c.Namecheap.TTL == 0 {
+		c.Namecheap.TTL = DefaultTTL
+	}
+	if !c.Namecheap.PropagationTimeout.set {
+		c.Namecheap.PropagationTimeout.Duration = time.Hour
+	}
+	if !c.Namecheap.PollingInterval.set {
+		c.Namecheap.PollingInterval.Duration = 15 * time.Second
 	}
 
 	for i := range c.Certificates {
@@ -182,34 +173,20 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("invalid acme.crontab_renew: %w", err)
 	}
 
-	profiles := make(map[string]Profile, len(c.Profiles))
-	for i, profile := range c.Profiles {
-		prefix := fmt.Sprintf("profiles[%d]", i)
-		if profile.Name == "" {
-			return fmt.Errorf("%s.name is required", prefix)
-		}
-		if _, exists := profiles[profile.Name]; exists {
-			return fmt.Errorf("profile %q is duplicated", profile.Name)
-		}
-		if profile.Provider != "namecheap" {
-			return fmt.Errorf("%s.provider must be namecheap", prefix)
-		}
-		if profile.ProviderOptions.AuthUsername == "" {
-			return fmt.Errorf("%s.provider_options.auth_username is required", prefix)
-		}
-		if profile.ProviderOptions.AuthToken == "" {
-			return fmt.Errorf("%s.provider_options.auth_token is required", prefix)
-		}
-		if profile.ProviderOptions.TTL < 1 {
-			return fmt.Errorf("%s.provider_options.ttl must be positive", prefix)
-		}
-		if profile.ProviderOptions.PropagationTimeout.Duration <= 0 {
-			return fmt.Errorf("%s.provider_options.propagation_timeout must be positive", prefix)
-		}
-		if profile.ProviderOptions.PollingInterval.Duration <= 0 {
-			return fmt.Errorf("%s.provider_options.polling_interval must be positive", prefix)
-		}
-		profiles[profile.Name] = profile
+	if c.Namecheap.AuthUsername == "" {
+		return errors.New("namecheap.auth_username is required")
+	}
+	if c.Namecheap.AuthToken == "" {
+		return errors.New("namecheap.auth_token is required")
+	}
+	if c.Namecheap.TTL < 1 {
+		return errors.New("namecheap.ttl must be positive")
+	}
+	if c.Namecheap.PropagationTimeout.Duration <= 0 {
+		return errors.New("namecheap.propagation_timeout must be positive")
+	}
+	if c.Namecheap.PollingInterval.Duration <= 0 {
+		return errors.New("namecheap.polling_interval must be positive")
 	}
 
 	if len(c.Certificates) == 0 && !c.Draft {
@@ -238,9 +215,6 @@ func (c *Config) Validate() error {
 				return fmt.Errorf("%s.domains[%d] is invalid", prefix, j)
 			}
 		}
-		if _, exists := profiles[certificate.Profile]; !exists {
-			return fmt.Errorf("%s.profile %q does not exist", prefix, certificate.Profile)
-		}
 		if certificate.KeyType != "rsa" && certificate.KeyType != "ecdsa" {
 			return fmt.Errorf("%s.key_type must be rsa or ecdsa", prefix)
 		}
@@ -254,16 +228,6 @@ func (c *Config) Validate() error {
 
 	return nil
 }
-
-func (c *Config) Profile(name string) (Profile, bool) {
-	for _, profile := range c.Profiles {
-		if profile.Name == name {
-			return profile, true
-		}
-	}
-	return Profile{}, false
-}
-
 func (c ACMEConfig) ServerURL() string {
 	if c.DirectoryURL != "" {
 		return c.DirectoryURL

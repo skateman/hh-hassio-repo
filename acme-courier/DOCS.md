@@ -4,40 +4,37 @@ ACME Courier obtains and renews Let's Encrypt certificates through Namecheap
 DNS-01 challenges. It can deploy generated PEM files to any number of local
 directories and SSH targets.
 
-The add-on reads `/config/config.yml` and keeps its ACME account and certificate
-state under `/config/letsencrypt`.
-
-## Add-on option
-
-`proxy` is an optional HTTP proxy URL used only for Namecheap API traffic. ACME
-requests to Let's Encrypt and SSH connections do not use it.
+All settings are configured in the add-on's **Configuration** tab, using either
+the form or YAML editor. Home Assistant stores them in `/data/options.json`.
+The `/config` mapping is reserved for ACME state and SSH files.
 
 ## Configuration
 
 ```yaml
+draft: false
+
 acme:
   email_account: admin@example.com
   crontab_renew: "12 01 * * *"
+  directory_url: ""
+  staging: false
   renew_before_days: 30
   renew_jitter: 30m
 
-profiles:
-  - name: namecheap
-    provider: namecheap
-    provider_options:
-      auth_username: account-name
-      auth_token: namecheap-api-token
-      auth_client_ip: 127.0.0.1
-      ttl: 120
-      propagation_timeout: 1h
-      polling_interval: 15s
+namecheap:
+  auth_username: account-name
+  auth_token: namecheap-api-token
+  auth_client_ip: 127.0.0.1
+  proxy: http://proxy.example.com:8080
+  ttl: 120
+  propagation_timeout: 1h
+  polling_interval: 15s
 
 certificates:
   - name: home.example.com
     domains:
       - home.example.com
       - "*.home.example.com"
-    profile: namecheap
     force_renew: false
     reuse_key: false
     key_type: rsa
@@ -54,6 +51,14 @@ certificates:
           - fullchain.pem
           - privkey.pem
 ```
+
+`namecheap.proxy` is optional and is used only for Namecheap API traffic.
+Requests to Let's Encrypt and SSH targets remain direct. Proxy credentials are
+masked by Home Assistant because the field uses the `password` schema type.
+
+If `namecheap.auth_client_ip` is empty, ACME Courier discovers the outbound
+address through the same Namecheap proxy. Set it explicitly when the proxy
+expects a fixed Namecheap-whitelisted value such as `127.0.0.1`.
 
 The cron expression uses the standard five-field format:
 `minute hour day-of-month month day-of-week`. It is evaluated in the
@@ -117,10 +122,10 @@ The Go implementation keeps using
 are reused until they enter the renewal window.
 
 ACME Courier is a separate add-on, so Home Assistant gives it a separate
-add-on configuration directory. Copy `config.yml`, the `.ssh` directory, and
-optionally the existing `letsencrypt` directory from the DNSRoboCert add-on
-configuration directory into the ACME Courier directory. Replace each
-`deploy_hook` with structured `deploy` targets before starting ACME Courier.
+add-on configuration directory. Enter the converted configuration in ACME
+Courier's **Configuration** tab. Copy the `.ssh` directory and optionally the
+existing `letsencrypt` directory from the DNSRoboCert add-on configuration
+directory into the ACME Courier directory.
 
 The old example:
 
@@ -132,6 +137,48 @@ deploy_hook: |
 ```
 
 becomes:
+
+```yaml
+namecheap:
+  auth_username: account-name
+  auth_token: namecheap-api-token
+  auth_client_ip: 127.0.0.1
+  proxy: http://proxy.example.com:8080
+
+certificates:
+  - name: home.example.com
+    domains:
+      - home.example.com
+      - "*.home.example.com"
+    force_renew: false
+    reuse_key: false
+    key_type: rsa
+    deploy:
+      - path: /ssl
+      - path: homeassistant@10.0.0.2:/etc/ssl/homeassistant/
+        identity_file: /config/.ssh/id_ed25519
+        known_hosts_file: /config/.ssh/known_hosts
+        files:
+          - fullchain.pem
+          - privkey.pem
+```
+
+The DNSRoboCert `profiles` list and each certificate's `profile` field are not
+used: ACME Courier has exactly one top-level `namecheap` configuration.
+
+## Migrating from ACME Courier 1.0.0
+
+Version 1.1.0 moves every setting into the Home Assistant add-on options and is
+marked as a breaking update.
+
+1. Copy the contents of `/config/config.yml` into the add-on Configuration YAML
+   editor.
+2. Replace `profiles` with the top-level `namecheap` mapping shown above.
+3. Remove every certificate's `profile` field.
+4. Move the old top-level add-on `proxy` option to `namecheap.proxy`.
+5. Keep `/config/.ssh` and `/config/letsencrypt` in place.
+
+For example, the deployment portion remains:
 
 ```yaml
 deploy:

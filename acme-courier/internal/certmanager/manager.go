@@ -36,7 +36,6 @@ import (
 
 type Manager struct {
 	storage  string
-	proxy    string
 	deployer *deploy.Deployer
 	logger   *slog.Logger
 	now      func() time.Time
@@ -49,10 +48,9 @@ type challengeRecord struct {
 	challenge     *acme.Challenge
 }
 
-func New(storage, proxy string, deployer *deploy.Deployer, logger *slog.Logger) *Manager {
+func New(storage string, deployer *deploy.Deployer, logger *slog.Logger) *Manager {
 	return &Manager{
 		storage:  storage,
-		proxy:    proxy,
 		deployer: deployer,
 		logger:   logger,
 		now:      time.Now,
@@ -112,17 +110,12 @@ func (m *Manager) reconcileCertificate(
 			}
 		}
 
-		profile, ok := cfg.Profile(certificate.Profile)
-		if !ok {
-			return fmt.Errorf("profile %q disappeared", certificate.Profile)
-		}
-
 		var err error
 		issueCtx, cancel := context.WithTimeout(
 			ctx,
-			profile.ProviderOptions.PropagationTimeout.Duration+30*time.Minute,
+			cfg.Namecheap.PropagationTimeout.Duration+30*time.Minute,
 		)
-		files, err = m.issue(issueCtx, cfg.ACME, profile, certificate)
+		files, err = m.issue(issueCtx, cfg.ACME, cfg.Namecheap, certificate)
 		cancel()
 		if err != nil {
 			return err
@@ -145,7 +138,7 @@ func (m *Manager) reconcileCertificate(
 func (m *Manager) issue(
 	ctx context.Context,
 	acmeConfig config.ACMEConfig,
-	profile config.Profile,
+	namecheapConfig config.NamecheapConfig,
 	certificate config.Certificate,
 ) (map[string][]byte, error) {
 	accountKey, err := m.accountKey(acmeConfig.ServerURL())
@@ -177,11 +170,11 @@ func (m *Manager) issue(
 	}
 
 	provider, err := namecheap.New(namecheap.Options{
-		Username: profile.ProviderOptions.AuthUsername,
-		Token:    profile.ProviderOptions.AuthToken,
-		ClientIP: profile.ProviderOptions.AuthClientIP,
-		TTL:      profile.ProviderOptions.TTL,
-	}, m.proxy)
+		Username: namecheapConfig.AuthUsername,
+		Token:    namecheapConfig.AuthToken,
+		ClientIP: namecheapConfig.AuthClientIP,
+		TTL:      namecheapConfig.TTL,
+	}, namecheapConfig.Proxy)
 	if err != nil {
 		return nil, err
 	}
@@ -239,8 +232,8 @@ func (m *Manager) issue(
 			ctx,
 			record.name,
 			record.value,
-			profile.ProviderOptions.PropagationTimeout.Duration,
-			profile.ProviderOptions.PollingInterval.Duration,
+			namecheapConfig.PropagationTimeout.Duration,
+			namecheapConfig.PollingInterval.Duration,
 			func(repairCtx context.Context) error {
 				return provider.Present(repairCtx, record.name, record.value)
 			},

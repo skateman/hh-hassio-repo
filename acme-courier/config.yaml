@@ -1,5 +1,5 @@
 name: ACME Courier
-version: 1.0.0
+version: 1.1.0
 slug: acme-courier
 description: Obtain Let's Encrypt certificates through Namecheap DNS and deploy them locally or over SSH
 arch:
@@ -7,9 +7,56 @@ arch:
   - amd64
 url: https://github.com/skateman/hh-hassio-repo
 options:
-  proxy: ""
+  draft: false
+  acme:
+    email_account: null
+    crontab_renew: "12 01 * * *"
+    directory_url: ""
+    staging: false
+    renew_before_days: 30
+    renew_jitter: "30m"
+  namecheap:
+    auth_username: null
+    auth_token: null
+    auth_client_ip: "127.0.0.1"
+    proxy: ""
+    ttl: 120
+    propagation_timeout: "1h"
+    polling_interval: "15s"
+  certificates: []
 schema:
-  proxy: "password?"
+  draft: bool
+  acme:
+    email_account: email
+    crontab_renew: str
+    directory_url: str
+    staging: bool
+    renew_before_days: "int(1,89)"
+    renew_jitter: str
+  namecheap:
+    auth_username: str
+    auth_token: password
+    auth_client_ip: str
+    proxy: password
+    ttl: "int(1,86400)"
+    propagation_timeout: str
+    polling_interval: str
+  certificates:
+    - name: str
+      domains:
+        - str
+      force_renew: "bool?"
+      reuse_key: "bool?"
+      key_type: "list(rsa|ecdsa)?"
+      deploy:
+        - path: str
+          identity_file: "str?"
+          known_hosts_file: "str?"
+          port: "int(1,65535)?"
+          files:
+            - "list(cert.pem|chain.pem|fullchain.pem|privkey.pem)?"
+breaking_versions:
+  - 1.1.0
 startup: application
 apparmor: true
 init: false
