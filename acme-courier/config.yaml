@@ -1,5 +1,5 @@
 name: ACME Courier
-version: 1.1.1
+version: 1.2.0
 slug: acme-courier
 description: Obtain Let's Encrypt certificates through Namecheap DNS and deploy them locally or over SSH
 arch:
@@ -55,10 +55,14 @@ schema:
           port: "int(1,65535)?"
           files:
             - "list(cert.pem|chain.pem|fullchain.pem|privkey.pem)?"
+      restart_apps:
+        - "str?"
 breaking_versions:
   - 1.1.0
 startup: application
 apparmor: true
+hassio_api: true
+hassio_role: manager
 init: false
 boot: auto
 image: ghcr.io/skateman/hh-hassio-repo/{arch}-acme-courier

@@ -33,6 +33,8 @@ certificates:
         files:
           - fullchain.pem
           - privkey.pem
+    restart_apps:
+      - core_nginx_proxy
 `
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
@@ -69,6 +71,9 @@ certificates:
 	}
 	if got := cfg.Certificates[0].Deploy[0].SelectedFiles(); len(got) != 4 {
 		t.Fatalf("default files = %#v", got)
+	}
+	if got := cfg.Certificates[0].RestartApps; len(got) != 1 || got[0] != "core_nginx_proxy" {
+		t.Fatalf("restart apps = %#v", got)
 	}
 }
 
@@ -166,5 +171,30 @@ func TestLoadHomeAssistantOptionsJSON(t *testing.T) {
 	}
 	if cfg.Namecheap.Proxy != "http://proxy.example.com:8080" {
 		t.Fatalf("proxy = %q", cfg.Namecheap.Proxy)
+	}
+}
+
+func TestLoadRejectsRestartingSelf(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "config.yml")
+	content := `
+acme:
+  email_account: admin@example.com
+namecheap:
+  auth_username: user
+  auth_token: token
+certificates:
+  - name: home.example.com
+    domains: [home.example.com]
+    restart_apps:
+      - 5b84fcb2_acme-courier
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := Load(path); err == nil {
+		t.Fatal("expected self restart to be rejected")
 	}
 }

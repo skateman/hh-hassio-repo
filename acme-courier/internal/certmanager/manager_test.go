@@ -7,6 +7,8 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"io"
+	"log/slog"
 	"math/big"
 	"net"
 	"testing"
@@ -16,6 +18,15 @@ import (
 
 	"github.com/skateman/hh-hassio-repo/acme-courier/internal/config"
 )
+
+type recordingRestarter struct {
+	slugs []string
+}
+
+func (r *recordingRestarter) Restart(_ context.Context, slug string) error {
+	r.slugs = append(r.slugs, slug)
+	return nil
+}
 
 func TestShouldRenew(t *testing.T) {
 	t.Parallel()
@@ -151,5 +162,42 @@ func TestQueryTXTServer(t *testing.T) {
 	}
 	if found {
 		t.Fatal("unexpected TXT token was found")
+	}
+}
+
+func TestRestartAppsTracksCertificateRevision(t *testing.T) {
+	t.Parallel()
+
+	restarter := &recordingRestarter{}
+	manager := &Manager{
+		storage:   t.TempDir(),
+		restarter: restarter,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	certificate := config.Certificate{
+		Name:        "example.com",
+		RestartApps: []string{"core_nginx_proxy"},
+	}
+	files := map[string][]byte{
+		"fullchain.pem": []byte("certificate"),
+		"privkey.pem":   []byte("private-key"),
+	}
+
+	if err := manager.restartApps(context.Background(), certificate, files); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.restartApps(context.Background(), certificate, files); err != nil {
+		t.Fatal(err)
+	}
+	if len(restarter.slugs) != 1 {
+		t.Fatalf("restart calls = %#v", restarter.slugs)
+	}
+
+	files["fullchain.pem"] = []byte("renewed-certificate")
+	if err := manager.restartApps(context.Background(), certificate, files); err != nil {
+		t.Fatal(err)
+	}
+	if len(restarter.slugs) != 2 {
+		t.Fatalf("restart calls after renewal = %#v", restarter.slugs)
 	}
 }

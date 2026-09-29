@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -28,7 +29,8 @@ var (
 		"fullchain.pem": {},
 		"privkey.pem":   {},
 	}
-	cronParser = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	cronParser     = cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
+	appSlugPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]*$`)
 )
 
 type Config struct {
@@ -58,12 +60,13 @@ type NamecheapConfig struct {
 }
 
 type Certificate struct {
-	Name       string         `yaml:"name,omitempty"`
-	Domains    []string       `yaml:"domains"`
-	Deploy     []DeployTarget `yaml:"deploy,omitempty"`
-	ForceRenew bool           `yaml:"force_renew,omitempty"`
-	ReuseKey   bool           `yaml:"reuse_key,omitempty"`
-	KeyType    string         `yaml:"key_type,omitempty"`
+	Name        string         `yaml:"name,omitempty"`
+	Domains     []string       `yaml:"domains"`
+	Deploy      []DeployTarget `yaml:"deploy,omitempty"`
+	RestartApps []string       `yaml:"restart_apps,omitempty"`
+	ForceRenew  bool           `yaml:"force_renew,omitempty"`
+	ReuseKey    bool           `yaml:"reuse_key,omitempty"`
+	KeyType     string         `yaml:"key_type,omitempty"`
 }
 
 type DeployTarget struct {
@@ -217,6 +220,19 @@ func (c *Config) Validate() error {
 		}
 		if certificate.KeyType != "rsa" && certificate.KeyType != "ecdsa" {
 			return fmt.Errorf("%s.key_type must be rsa or ecdsa", prefix)
+		}
+		restartApps := make(map[string]struct{}, len(certificate.RestartApps))
+		for j, slug := range certificate.RestartApps {
+			if !appSlugPattern.MatchString(slug) {
+				return fmt.Errorf("%s.restart_apps[%d] is not a valid app slug", prefix, j)
+			}
+			if slug == "acme-courier" || strings.HasSuffix(slug, "_acme-courier") {
+				return fmt.Errorf("%s.restart_apps[%d] must not target ACME Courier itself", prefix, j)
+			}
+			if _, duplicate := restartApps[slug]; duplicate {
+				return fmt.Errorf("%s.restart_apps contains duplicate %q", prefix, slug)
+			}
+			restartApps[slug] = struct{}{}
 		}
 
 		for j, target := range certificate.Deploy {

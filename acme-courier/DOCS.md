@@ -50,6 +50,8 @@ certificates:
         files:
           - fullchain.pem
           - privkey.pem
+    restart_apps:
+      - core_nginx_proxy
 ```
 
 `namecheap.proxy` is optional and is used only for Namecheap API traffic.
@@ -117,6 +119,38 @@ Successful deployments are recorded per target and certificate revision, so a
 failed target is retried at the next scheduled run without repeatedly uploading
 unchanged certificates to targets that already succeeded.
 
+## Restarting certificate consumers
+
+Long-running applications usually keep certificates open in memory. Add their
+full Home Assistant Supervisor slugs to `restart_apps` to restart them after a
+new certificate revision has been deployed:
+
+```yaml
+certificates:
+  - name: home.example.com
+    domains:
+      - home.example.com
+      - "*.home.example.com"
+    deploy:
+      - path: /ssl
+    restart_apps:
+      - core_nginx_proxy
+```
+
+Restarts are recorded per certificate revision. They run only when the
+certificate changes or the restart list is newly configured; failed restarts
+remain pending and are retried on the next reconciliation.
+
+The official NGINX proxy checks `/ssl` once daily and reloads itself when the
+certificate timestamp changes. Adding `core_nginx_proxy` makes the new
+certificate active immediately instead. The Home Assistant Community UniFi app
+does not mount `/ssl` or import these PEM files, so it should not be included;
+put NGINX in front of UniFi instead.
+
+Restarting other apps requires ACME Courier's Supervisor manager permission.
+Only explicitly configured slugs are restarted, and ACME Courier refuses to
+restart itself.
+
 ## Migration from DNSRoboCert
 
 The Go implementation keeps using
@@ -163,6 +197,8 @@ certificates:
         files:
           - fullchain.pem
           - privkey.pem
+    restart_apps:
+      - core_nginx_proxy
 ```
 
 The DNSRoboCert `profiles` list and each certificate's `profile` field are not

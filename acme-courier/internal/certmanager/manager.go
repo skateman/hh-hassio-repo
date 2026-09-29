@@ -37,10 +37,15 @@ import (
 )
 
 type Manager struct {
-	storage  string
-	deployer *deploy.Deployer
-	logger   *slog.Logger
-	now      func() time.Time
+	storage   string
+	deployer  *deploy.Deployer
+	restarter AppRestarter
+	logger    *slog.Logger
+	now       func() time.Time
+}
+
+type AppRestarter interface {
+	Restart(context.Context, string) error
 }
 
 type challengeRecord struct {
@@ -50,12 +55,18 @@ type challengeRecord struct {
 	challenge     *acme.Challenge
 }
 
-func New(storage string, deployer *deploy.Deployer, logger *slog.Logger) *Manager {
+func New(
+	storage string,
+	deployer *deploy.Deployer,
+	restarter AppRestarter,
+	logger *slog.Logger,
+) *Manager {
 	return &Manager{
-		storage:  storage,
-		deployer: deployer,
-		logger:   logger,
-		now:      time.Now,
+		storage:   storage,
+		deployer:  deployer,
+		restarter: restarter,
+		logger:    logger,
+		now:       time.Now,
 	}
 }
 
@@ -210,7 +221,10 @@ func (m *Manager) reconcileCertificate(
 		)
 	}
 
-	return m.deployTargets(ctx, certificate, files, reason != "schedule")
+	if err := m.deployTargets(ctx, certificate, files, reason != "schedule"); err != nil {
+		return err
+	}
+	return m.restartApps(ctx, certificate, files)
 }
 
 func (m *Manager) issue(
@@ -542,6 +556,78 @@ func (m *Manager) deploymentMarker(
 	}
 
 	return filepath.Join(m.storage, ".acme-courier", "deployments", certificateName, targetID),
+		hex.EncodeToString(contentHash.Sum(nil)),
+		nil
+}
+
+func (m *Manager) restartApps(
+	ctx context.Context,
+	certificate config.Certificate,
+	files map[string][]byte,
+) error {
+	if len(certificate.RestartApps) == 0 {
+		return nil
+	}
+	if m.restarter == nil {
+		return errors.New("Home Assistant app restarter is unavailable")
+	}
+
+	markerPath, expectedMarker, err := m.restartMarker(certificate, files)
+	if err != nil {
+		return err
+	}
+	currentMarker, err := os.ReadFile(markerPath)
+	if err == nil && strings.TrimSpace(string(currentMarker)) == expectedMarker {
+		return nil
+	}
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read app restart marker: %w", err)
+	}
+
+	for _, slug := range certificate.RestartApps {
+		m.logger.Info("restarting certificate consumer", "app", slug, "certificate", certificate.Name)
+		if err := m.restarter.Restart(ctx, slug); err != nil {
+			return fmt.Errorf("restart certificate consumer %s: %w", slug, err)
+		}
+		m.logger.Info("certificate consumer restarted", "app", slug, "certificate", certificate.Name)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(markerPath), 0o750); err != nil {
+		return fmt.Errorf("create app restart marker directory: %w", err)
+	}
+	if err := atomicWrite(markerPath, []byte(expectedMarker+"\n"), 0o600); err != nil {
+		return fmt.Errorf("write app restart marker: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) restartMarker(
+	certificate config.Certificate,
+	files map[string][]byte,
+) (path, value string, err error) {
+	targetHash := sha256.New()
+	for _, slug := range certificate.RestartApps {
+		writeHashField(targetHash, slug)
+	}
+	targetID := hex.EncodeToString(targetHash.Sum(nil)[:12])
+
+	contentHash := sha256.New()
+	for _, name := range []string{"fullchain.pem", "privkey.pem"} {
+		content, ok := files[name]
+		if !ok {
+			return "", "", fmt.Errorf("generated file %q is unavailable", name)
+		}
+		writeHashField(contentHash, name)
+		_, _ = contentHash.Write(content)
+	}
+
+	return filepath.Join(
+			m.storage,
+			".acme-courier",
+			"restarts",
+			certificate.Name,
+			targetID,
+		),
 		hex.EncodeToString(contentHash.Sum(nil)),
 		nil
 }

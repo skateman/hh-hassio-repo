@@ -17,6 +17,7 @@ import (
 	"github.com/skateman/hh-hassio-repo/acme-courier/internal/certmanager"
 	"github.com/skateman/hh-hassio-repo/acme-courier/internal/config"
 	"github.com/skateman/hh-hassio-repo/acme-courier/internal/deploy"
+	"github.com/skateman/hh-hassio-repo/acme-courier/internal/supervisor"
 )
 
 func main() {
@@ -36,7 +37,8 @@ func main() {
 	slog.SetDefault(logger)
 
 	deployer := deploy.New(deploy.ExecRunner{}, logger)
-	manager := certmanager.New(*storagePath, deployer, logger)
+	supervisorClient := supervisor.New("http://supervisor", os.Getenv("SUPERVISOR_TOKEN"))
+	manager := certmanager.New(*storagePath, deployer, supervisorClient, logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
