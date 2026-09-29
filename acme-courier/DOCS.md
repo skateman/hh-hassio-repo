@@ -81,6 +81,8 @@ adding or removing a single record. ACME Courier therefore:
 - re-reads and merges the complete zone before every TXT change;
 - preserves multiple validation tokens on the same `_acme-challenge` name;
 - verifies every update and retries if another instance overwrote it;
+- checks TXT propagation directly against every authoritative nameserver,
+  bypassing stale Docker or Home Assistant DNS caches;
 - periodically repairs a challenge record while waiting for DNS propagation;
 - verifies challenge cleanup so concurrent removals converge safely; and
 - applies renewal jitter before scheduled runs.

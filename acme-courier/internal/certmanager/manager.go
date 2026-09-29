@@ -27,7 +27,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/miekg/dns"
 	"golang.org/x/crypto/acme"
+	"golang.org/x/net/publicsuffix"
 
 	"github.com/skateman/hh-hassio-repo/acme-courier/internal/config"
 	"github.com/skateman/hh-hassio-repo/acme-courier/internal/deploy"
@@ -55,6 +57,82 @@ func New(storage string, deployer *deploy.Deployer, logger *slog.Logger) *Manage
 		logger:   logger,
 		now:      time.Now,
 	}
+}
+
+func authoritativeTXTContains(ctx context.Context, name, expected string) (bool, error) {
+	zone, err := publicsuffix.EffectiveTLDPlusOne(strings.TrimSuffix(name, "."))
+	if err != nil {
+		return false, fmt.Errorf("determine authoritative DNS zone for %s: %w", name, err)
+	}
+
+	nameservers, err := net.DefaultResolver.LookupNS(ctx, dns.Fqdn(zone))
+	if err != nil {
+		return false, fmt.Errorf("resolve authoritative nameservers for %s: %w", zone, err)
+	}
+	if len(nameservers) == 0 {
+		return false, fmt.Errorf("no authoritative nameservers found for %s", zone)
+	}
+
+	for _, nameserver := range nameservers {
+		found, err := queryNameserverTXT(ctx, nameserver.Host, name, expected)
+		if err != nil {
+			return false, err
+		}
+		if !found {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func queryNameserverTXT(
+	ctx context.Context,
+	nameserver, name, expected string,
+) (bool, error) {
+	host := strings.TrimSuffix(nameserver, ".")
+	addresses, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+	if err != nil {
+		return false, fmt.Errorf("resolve authoritative nameserver %s: %w", host, err)
+	}
+
+	var queryErrors []error
+	for _, address := range addresses {
+		found, err := queryTXTServer(ctx, net.JoinHostPort(address.String(), "53"), name, expected)
+		if err == nil {
+			return found, nil
+		}
+		queryErrors = append(queryErrors, err)
+	}
+	return false, fmt.Errorf("query authoritative nameserver %s: %w", host, errors.Join(queryErrors...))
+}
+
+func queryTXTServer(ctx context.Context, server, name, expected string) (bool, error) {
+	message := new(dns.Msg)
+	message.SetQuestion(dns.Fqdn(name), dns.TypeTXT)
+
+	client := &dns.Client{Net: "udp", Timeout: 5 * time.Second}
+	response, _, err := client.ExchangeContext(ctx, message, server)
+	if err != nil {
+		return false, err
+	}
+	if response.Truncated {
+		client.Net = "tcp"
+		response, _, err = client.ExchangeContext(ctx, message, server)
+		if err != nil {
+			return false, err
+		}
+	}
+	if response.Rcode != dns.RcodeSuccess {
+		return false, fmt.Errorf("DNS response code %s", dns.RcodeToString[response.Rcode])
+	}
+
+	for _, answer := range response.Answer {
+		txt, ok := answer.(*dns.TXT)
+		if ok && strings.Join(txt.Txt, "") == expected {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *Manager) Reconcile(ctx context.Context, cfg *config.Config, reason string) error {
@@ -185,6 +263,8 @@ func (m *Manager) issue(
 			cleanupCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			if err := provider.Cleanup(cleanupCtx, record.name, record.value); err != nil {
 				m.logger.Warn("failed to remove DNS challenge", "name", record.name, "error", err)
+			} else {
+				m.logger.Info("removed DNS challenge", "name", record.name)
 			}
 			cancel()
 		}
@@ -219,6 +299,7 @@ func (m *Manager) issue(
 		if err := provider.Present(ctx, name, value); err != nil {
 			return nil, fmt.Errorf("create DNS challenge %s: %w", name, err)
 		}
+		m.logger.Info("published DNS challenge", "name", name)
 		records = append(records, challengeRecord{
 			name:          name,
 			value:         value,
@@ -228,6 +309,7 @@ func (m *Manager) issue(
 	}
 
 	for _, record := range records {
+		m.logger.Info("waiting for authoritative DNS propagation", "name", record.name)
 		if err := waitForTXT(
 			ctx,
 			record.name,
@@ -240,6 +322,7 @@ func (m *Manager) issue(
 		); err != nil {
 			return nil, err
 		}
+		m.logger.Info("DNS challenge propagated", "name", record.name)
 	}
 
 	for _, record := range records {
@@ -251,6 +334,7 @@ func (m *Manager) issue(
 		if _, err := client.WaitAuthorization(ctx, record.authorization); err != nil {
 			return nil, fmt.Errorf("validate DNS challenge for %s: %w", record.name, err)
 		}
+		m.logger.Info("ACME authorization valid", "name", record.name)
 	}
 
 	order, err = client.WaitOrder(ctx, order.URI)
@@ -502,15 +586,15 @@ func waitForTXT(
 	defer ticker.Stop()
 	repairInterval := max(time.Minute, interval*4)
 	nextRepair := time.Now().Add(repairInterval)
+	var lastLookupError error
 
 	for {
-		values, err := net.DefaultResolver.LookupTXT(ctx, name)
-		if err == nil {
-			for _, value := range values {
-				if value == expected {
-					return nil
-				}
-			}
+		propagated, err := authoritativeTXTContains(ctx, name, expected)
+		if err == nil && propagated {
+			return nil
+		}
+		if err != nil {
+			lastLookupError = err
 		}
 
 		if !time.Now().Before(nextRepair) {
@@ -525,6 +609,14 @@ func waitForTXT(
 
 		select {
 		case <-ctx.Done():
+			if lastLookupError != nil {
+				return fmt.Errorf(
+					"wait for DNS propagation of %s: %w (last authoritative lookup: %v)",
+					name,
+					ctx.Err(),
+					lastLookupError,
+				)
+			}
 			return fmt.Errorf("wait for DNS propagation of %s: %w", name, ctx.Err())
 		case <-ticker.C:
 		}

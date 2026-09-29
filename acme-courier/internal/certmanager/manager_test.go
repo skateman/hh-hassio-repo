@@ -1,14 +1,18 @@
 package certmanager
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"net"
 	"testing"
 	"time"
+
+	"github.com/miekg/dns"
 
 	"github.com/skateman/hh-hassio-repo/acme-courier/internal/config"
 )
@@ -95,5 +99,57 @@ func TestDeploymentMarkerTracksTargetAndCertificateContent(t *testing.T) {
 	}
 	if firstValue == secondValue {
 		t.Fatal("marker value did not change with certificate content")
+	}
+}
+
+func TestQueryTXTServer(t *testing.T) {
+	t.Parallel()
+
+	packetConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &dns.Server{
+		PacketConn: packetConn,
+		Handler: dns.HandlerFunc(func(writer dns.ResponseWriter, request *dns.Msg) {
+			response := new(dns.Msg)
+			response.SetReply(request)
+			response.Authoritative = true
+			response.Answer = []dns.RR{&dns.TXT{
+				Hdr: dns.RR_Header{
+					Name:   request.Question[0].Name,
+					Rrtype: dns.TypeTXT,
+					Class:  dns.ClassINET,
+					Ttl:    120,
+				},
+				Txt: []string{"expected-token"},
+			}}
+			_ = writer.WriteMsg(response)
+		}),
+	}
+	go func() {
+		_ = server.ActivateAndServe()
+	}()
+	t.Cleanup(func() {
+		_ = server.Shutdown()
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	found, err := queryTXTServer(ctx, packetConn.LocalAddr().String(), "_acme-challenge.example.com", "expected-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("expected TXT token was not found")
+	}
+
+	found, err = queryTXTServer(ctx, packetConn.LocalAddr().String(), "_acme-challenge.example.com", "other-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if found {
+		t.Fatal("unexpected TXT token was found")
 	}
 }
